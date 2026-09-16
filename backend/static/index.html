@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grow tent control</title>
+<style>
+  :root {
+    --bg: #1c1712;
+    --panel: #241e17;
+    --panel-raised: #2c251c;
+    --border: #4a3f2f;
+    --border-dim: #362d22;
+    --text: #e8dfc8;
+    --text-dim: #a89a7c;
+    --text-faint: #6f6552;
+    --ok: #7c9a5c;
+    --warn: #c17d3f;
+    --danger: #a5473a;
+    --manual-wash: #2e2416;
+    --manual-border: #c17d3f;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
+    --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    padding: 24px 16px 60px;
+  }
+
+  .wrap {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 14px;
+    margin-bottom: 20px;
+  }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0;
+    color: var(--text);
+  }
+
+  h1 .sub {
+    color: var(--text-dim);
+    font-weight: 400;
+    font-size: 13px;
+    margin-left: 10px;
+  }
+
+  #conn-badge {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text-dim);
+  }
+
+  #conn-badge[data-state="unreachable"] {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+
+  #conn-badge[data-state="stale"] {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+
+  #conn-badge[data-state="ok"] {
+    color: var(--ok);
+    border-color: var(--border);
+  }
+
+  .banner {
+    display: none;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 10px 14px;
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    background: rgba(165, 71, 58, 0.08);
+    margin-bottom: 18px;
+  }
+
+  .banner.stale {
+    border-color: var(--warn);
+    color: var(--warn);
+    background: rgba(193, 125, 63, 0.08);
+  }
+
+  .banner.show { display: block; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 18px;
+    margin-bottom: 18px;
+    transition: background 0.3s ease, border-color 0.3s ease;
+  }
+
+  body.manual .panel {
+    background: var(--manual-wash);
+    border-color: var(--manual-border);
+  }
+
+  body.manual::before {
+    content: "manual mode";
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: #17130d;
+    background: var(--manual-border);
+    padding: 3px 0;
+    z-index: 10;
+  }
+
+  body.manual { padding-top: 44px; }
+
+  .readouts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+
+  .readout {
+    border: 1px solid var(--border-dim);
+    padding: 12px 10px;
+    text-align: center;
+  }
+
+  .readout .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .readout .value {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    line-height: 1;
+    color: var(--text);
+  }
+
+  .readout .unit {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--text-faint);
+  }
+
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .row:last-child { margin-bottom: 0; }
+
+  .section-title {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: none;
+    margin: 0 0 12px;
+    letter-spacing: 0.02em;
+  }
+
+  .mode-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+  }
+
+  .mode-toggle button {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 7px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+
+  .mode-toggle button.active {
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .mode-toggle button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  .meta {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  .relays {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+
+  .relay {
+    border: 1px solid var(--border-dim);
+    padding: 12px;
+    text-align: center;
+    position: relative;
+  }
+
+  .relay .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .relay button {
+    width: 100%;
+    padding: 10px 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text-faint);
+    cursor: not-allowed;
+  }
+
+  .relay button.on {
+    color: var(--ok);
+    border-color: var(--ok);
+  }
+
+  body.manual .relay button {
+    cursor: pointer;
+    color: var(--text);
+  }
+
+  body.manual .relay button.on {
+    color: var(--ok);
+    border-color: var(--ok);
+    background: rgba(124, 154, 92, 0.12);
+  }
+
+  .relay .pending {
+    display: none;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--warn);
+    font-family: var(--font-mono);
+  }
+
+  .relay.pending .pending { display: block; }
+
+  footer {
+    margin-top: 26px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Grow tent control<span class="sub">Bubblegum Auto Fem &middot; 0.5m&sup2;</span></h1>
+    <span id="conn-badge" data-state="unreachable">connecting&hellip;</span>
+  </header>
+
+  <div id="banner-unreachable" class="banner">backend unreachable &mdash; the dashboard cannot reach the server itself. Retrying every 5s.</div>
+  <div id="banner-stale" class="banner stale">sensor offline &mdash; the backend is up, but the ESP32 has not reported in a while. Showing last known readings.</div>
+
+  <div class="panel">
+    <div class="readouts">
+      <div class="readout">
+        <div class="label">temperature</div>
+        <div><span class="value" id="val-temp">--</span><span class="unit">&deg;c</span></div>
+      </div>
+      <div class="readout">
+        <div class="label">humidity</div>
+        <div><span class="value" id="val-humidity">--</span><span class="unit">%</span></div>
+      </div>
+      <div class="readout">
+        <div class="label">soil moisture</div>
+        <div><span class="value" id="val-soil">--</span><span class="unit">%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="section-title">mode</div>
+      <div class="mode-toggle">
+        <button id="btn-auto" class="active">auto</button>
+        <button id="btn-manual">manual</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="meta" id="last-seen">last seen: --</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">relays</div>
+    <div class="relays">
+      <div class="relay" id="relay-fan" data-relay="fan">
+        <div class="label">fan</div>
+        <button>off</button>
+        <div class="pending">pending&hellip;</div>
+      </div>
+      <div class="relay" id="relay-ac" data-relay="ac">
+        <div class="label">ac</div>
+        <button>off</button>
+        <div class="pending">pending&hellip;</div>
+      </div>
+      <div class="relay" id="relay-pump" data-relay="pump">
+        <div class="label">pump</div>
+        <button>off</button>
+        <div class="pending">pending&hellip;</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>polling /api/status every 5s</footer>
+</div>
+
+<script>
+(function () {
+  var POLL_MS = 5000;
+  var relays = ["fan", "ac", "pump"];
+  var currentMode = "auto";
+
+  function fmt(n) {
+    return (typeof n === "number") ? n.toFixed(1) : "--";
+  }
+
+  function setConnBadge(state, text) {
+    var el = document.getElementById("conn-badge");
+    el.dataset.state = state;
+    el.textContent = text;
+  }
+
+  function showBanner(id, show) {
+    document.getElementById(id).classList.toggle("show", show);
+  }
+
+  function applyStatus(status) {
+    document.getElementById("val-temp").textContent = status.latest_reading ? fmt(status.latest_reading.temp_c) : "--";
+    document.getElementById("val-humidity").textContent = status.latest_reading ? fmt(status.latest_reading.humidity) : "--";
+    document.getElementById("val-soil").textContent = status.latest_reading ? fmt(status.latest_reading.soil_moisture) : "--";
+
+    document.getElementById("last-seen").textContent = "last seen: " + (status.last_seen ? new Date(status.last_seen + "Z").toLocaleTimeString() : "never");
+
+    currentMode = status.mode;
+    document.body.classList.toggle("manual", status.mode === "manual");
+    document.getElementById("btn-auto").classList.toggle("active", status.mode === "auto");
+    document.getElementById("btn-manual").classList.toggle("active", status.mode === "manual");
+
+    var manual = status.mode === "manual";
+    relays.forEach(function (name) {
+      var container = document.getElementById("relay-" + name);
+      var btn = container.querySelector("button");
+      var commanded = status.commanded_relay_state ? status.commanded_relay_state[name] : false;
+      var reported = status.reported_relay_state ? status.reported_relay_state[name] : commanded;
+
+      btn.textContent = reported ? "on" : "off";
+      btn.classList.toggle("on", !!reported);
+      btn.disabled = !manual;
+
+      var pending = status.reported_relay_state != null && commanded !== reported;
+      container.classList.toggle("pending", pending);
+    });
+
+    showBanner("banner-stale", !!status.offline);
+    showBanner("banner-unreachable", false);
+    setConnBadge(status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
+  }
+
+  function poll() {
+    fetch("/api/status")
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status " + r.status);
+        return r.json();
+      })
+      .then(applyStatus)
+      .catch(function () {
+        setConnBadge("unreachable", "unreachable");
+        showBanner("banner-unreachable", true);
+        showBanner("banner-stale", false);
+      });
+  }
+
+  document.getElementById("btn-auto").addEventListener("click", function () {
+    fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "auto" }),
+    }).then(poll);
+  });
+
+  document.getElementById("btn-manual").addEventListener("click", function () {
+    fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "manual" }),
+    }).then(poll);
+  });
+
+  relays.forEach(function (name) {
+    var container = document.getElementById("relay-" + name);
+    var btn = container.querySelector("button");
+    btn.addEventListener("click", function () {
+      if (currentMode !== "manual") return;
+      var turningOn = !btn.classList.contains("on");
+      fetch("/api/relay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relay: name, state: turningOn }),
+      }).then(poll);
+    });
+  });
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

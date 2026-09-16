@@ -1,0 +1,10 @@
+data/
+ha_config/
+.env
+*.pyc
+__pycache__/
+.venv/
+venv/
+.pio/
+.pytest_cache/
+*.xlsx

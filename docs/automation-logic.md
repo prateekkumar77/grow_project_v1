@@ -1,0 +1,84 @@
+# Automation logic
+
+Plain-language description of how the grow tent decides what to do. The
+ESP32 never makes environmental decisions itself — it only reports sensor
+readings and its actual relay states, and applies whatever the backend
+tells it to do. All of the logic below runs in `backend/decision_engine.py`
+and only applies when the system is in **auto** mode.
+
+## What gets measured
+
+- **Temperature** and **humidity** from the DHT22.
+- **Soil moisture** from the analog probe, converted to a 0–100% scale.
+- A **rolling baseline** temperature and humidity, averaged over the last
+  `BASELINE_WINDOW_MINUTES` (default 30) of readings. "Rising" or "falling"
+  always means relative to this baseline, not an absolute number — a tent
+  that's steadily warm isn't a rise; a sudden climb is.
+
+## Humidity rules
+
+- **Humidity climbing at or above `HUMIDITY_HIGH_THRESHOLD`** (default 65%):
+  turn the **AC** on. The AC pulls in drier, cooler conditioned air, which
+  brings both temperature and humidity down together.
+- **Humidity dropping at or below `HUMIDITY_LOW_THRESHOLD`** (default 40%,
+  expected to be rare with no active ventilation): turn the **AC off** and
+  the **fan on**, so the tent pulls in room air instead — the room is
+  normally more humid than the tent, so this raises humidity back up
+  without needing a humidifier.
+
+## Temperature rules
+
+Measured as a rise above the rolling baseline:
+
+- **A moderate rise** (`TEMP_RISE_FAN_THRESHOLD_C` to `TEMP_RISE_AC_THRESHOLD_C`,
+  default 2–3°C): turn the **fan on alone**. Air movement alone is often
+  enough to knock a couple of degrees off without pulling in outside air.
+- **A larger or sustained rise** (at or above `TEMP_RISE_AC_THRESHOLD_C`,
+  default 3°C): **escalate to AC**, which handles both temperature and
+  humidity at once rather than relying on air movement alone.
+
+## Soil moisture / watering
+
+- **Soil moisture at or below `SOIL_MOISTURE_LOW_THRESHOLD`** (default 35%):
+  command the **pump on**.
+- **Soil moisture at or above that threshold plus `SOIL_MOISTURE_HYSTERESIS`**
+  (default 5 points, i.e. 40%): command the pump off.
+- In between those two numbers, the pump holds whatever it was already
+  doing — this hysteresis band stops the pump from rapidly clicking on/off
+  right at the boundary.
+- The backend does not need to worry about spamming "pump on" every cycle —
+  the ESP32 itself only ever *starts* the pump timer on an off→on
+  transition, and independently enforces a **hard 30 second max run** with
+  a **60 second cooldown** afterwards, regardless of what the backend asks
+  for. That's a firmware safety limit, not a decision the backend makes.
+
+## Manual mode
+
+When the dashboard puts the system in **manual**, the decision engine is
+not consulted at all. Relay commands come only from the last thing a human
+clicked on the dashboard (`POST /api/relay`). The only thing that can still
+override a manual command is the ESP32's own local safety logic (pump
+cap/cooldown, and the offline emergency-temperature floor) — never another
+piece of backend logic.
+
+Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
+(default 30) of no dashboard activity, so a manual session can't be
+forgotten and left uncontrolled indefinitely.
+
+## What the firmware does entirely on its own
+
+This is the *only* logic that lives on the ESP32, and it runs regardless of
+mode or what the backend says, because it has to survive a dead network
+connection:
+
+- **Pump cap**: force the pump off after `MAX_PUMP_RUN_SECONDS` (default
+  30s) of continuous running, and refuse to turn it back on for
+  `PUMP_COOLDOWN_SECONDS` (default 60s) afterwards.
+- **On any failed telemetry POST**: force the pump off immediately and
+  unconditionally.
+- **While offline, if temperature reaches `EMERGENCY_TEMP_C`** (default
+  35.0°C — sanity-check this against your actual tent before trusting it):
+  force the fan and AC on locally, as a one-way floor. This is not real
+  climate control, just a last-resort heat cutoff while nothing else is
+  watching.
+- Everything else holds its last-commanded state while offline.
