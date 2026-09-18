@@ -158,3 +158,26 @@ never blocks or breaks `/api/telemetry` — failures are logged and ignored.
 Confirm the exact `tts.speak` payload against your own Home Assistant
 version via Developer Tools → Actions before relying on it in production;
 see `docs/DECISIONS.md` for why.
+
+The backend never talks to Google directly — it only ever calls Home
+Assistant's REST API over the local network; HA is what actually reaches
+your Google Home devices (Cast for speakers, whatever integration matches
+your smart plug/AC for switches).
+
+### AC as a Google Home device (no physical relay)
+
+If your AC is a Google Home device (smart plug or native smart AC) rather
+than something wired to the ESP32's relay board, the backend can drive it
+entirely through Home Assistant instead: set `HA_AC_ENTITY` to its entity
+ID and `HA_AC_DOMAIN` to `switch` (smart plug) or `climate` (native smart
+AC). The decision engine's `ac` output is pushed to that entity via
+`ha_client.set_ac()` whenever it changes — automatically after each
+`/api/telemetry` cycle in auto mode, or immediately on a manual
+`/api/relay` toggle, since there's no ESP32 relay for a manual command to
+reach otherwise.
+
+One consequence: the firmware's offline emergency-temperature floor
+(`EMERGENCY_TEMP_C`) can only drive a physical relay, so it no longer
+protects the AC specifically if it has no relay — only the fan still has
+that offline backstop. See `docs/automation-logic.md` and
+`docs/DECISIONS.md` for the full reasoning.

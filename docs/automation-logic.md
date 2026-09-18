@@ -52,6 +52,31 @@ Measured as a rise above the rolling baseline:
   a **60 second cooldown** afterwards, regardless of what the backend asks
   for. That's a firmware safety limit, not a decision the backend makes.
 
+## AC: no physical relay, controlled via Home Assistant
+
+Unlike fan and pump, the AC in this deployment is a Google Home device
+(a smart plug or native smart AC/mini-split), not something wired to an
+ESP32 relay. The decision engine's `ac` output is the same either way —
+what differs is how it gets applied:
+
+- **Fan / pump**: the ESP32 polls its commanded state on every telemetry
+  cycle and drives the physical relay itself.
+- **AC**: the backend pushes the state directly to Home Assistant
+  (`ha_client.set_ac()`, entity configured via `HA_AC_ENTITY`/
+  `HA_AC_DOMAIN`) whenever it changes — once from `/api/telemetry` in
+  auto mode, or immediately from `/api/relay` in manual mode, since
+  there's no ESP32 relay for a manual click to reach otherwise. The call
+  runs in the background so a slow or unreachable Home Assistant never
+  delays the ESP32's telemetry response.
+- `/api/status` reports the AC's last **Home Assistant-confirmed** state
+  as its "reported" value, not whatever the ESP32's (now unwired) AC
+  relay pin happens to read — that pin no longer means anything.
+
+This does mean the AC loses the one piece of true offline resilience the
+other relays have: if the network or Home Assistant is down, the AC just
+stays wherever it last was, with no local device watching temperature for
+it. See the note on `EMERGENCY_TEMP_C` below.
+
 ## Manual mode
 
 When the dashboard puts the system in **manual**, the decision engine is
@@ -80,5 +105,7 @@ connection:
   35.0°C — sanity-check this against your actual tent before trusting it):
   force the fan and AC on locally, as a one-way floor. This is not real
   climate control, just a last-resort heat cutoff while nothing else is
-  watching.
+  watching. **If the AC has no physical relay** (see above), this only
+  actually does anything for the fan — the "ac" side of it drives an
+  unwired pin.
 - Everything else holds its last-commanded state while offline.

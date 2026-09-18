@@ -27,7 +27,7 @@
 #define SOIL_MOISTURE_PIN 34  // ADC1 channel, analog-capable pin
 
 #define RELAY_FAN_PIN 25
-#define RELAY_AC_PIN 26
+#define RELAY_AC_PIN 26  // leave unwired if the AC is a Home Assistant/Google Home device instead
 #define RELAY_PUMP_PIN 27
 #define RELAY_ACTIVE_LOW true  // most cheap relay boards trigger LOW = energized
 
@@ -48,6 +48,12 @@
 // Floor-level emergency temperature cutoff used ONLY while offline.
 // 35.0C is a starting guess for a small enclosed tent - sanity-check this
 // against your actual tent/strain heat tolerance before relying on it.
+//
+// NOTE: if your AC is controlled via Home Assistant/Google Home instead of
+// RELAY_AC_PIN (see backend HA_AC_ENTITY in .env), this floor forcing "ac"
+// on here has no physical effect - that relay channel is unwired. The fan
+// is then the only local backstop against an offline network; the AC has
+// none.
 #define EMERGENCY_TEMP_C 35.0f
 
 // ---------------------------------------------------------------------------

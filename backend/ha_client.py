@@ -20,10 +20,21 @@ HA_SPEAKER_ENTITY = os.getenv("HA_SPEAKER_ENTITY", "media_player.google_home_spe
 HA_ALERT_DEBOUNCE_SECONDS = float(os.getenv("HA_ALERT_DEBOUNCE_SECONDS", "600"))
 HA_REQUEST_TIMEOUT_SECONDS = float(os.getenv("HA_REQUEST_TIMEOUT_SECONDS", "5"))
 
-_headers = {
-    "Authorization": f"Bearer {HA_TOKEN}",
-    "Content-Type": "application/json",
-}
+# The AC has no physical relay - it's a Google Home device reached only
+# through Home Assistant. Domain is configurable because "AC on a Google
+# Home smart plug" (switch.turn_on/off) and "native smart AC" (usually a
+# climate.* entity) use different HA service calls; switch covers the
+# common smart-plug case.
+HA_AC_ENTITY = os.getenv("HA_AC_ENTITY", "switch.grow_tent_ac")
+HA_AC_DOMAIN = os.getenv("HA_AC_DOMAIN", "switch")
+
+_headers = {"Content-Type": "application/json"}
+if HA_TOKEN:
+    # An empty token would otherwise produce "Bearer " (trailing space),
+    # which httpx rejects as an invalid header value - fails every call
+    # until a real token is configured, exactly the state during initial
+    # setup.
+    _headers["Authorization"] = f"Bearer {HA_TOKEN}"
 
 # alert_type -> unix timestamp of last time it was actually sent
 _last_alert_sent: Dict[str, float] = {}
@@ -47,6 +58,14 @@ def toggle_switch(entity_id: str, on: bool) -> bool:
 
 def toggle_grow_tent_switch(on: bool) -> bool:
     return toggle_switch(HA_SWITCH_ENTITY, on)
+
+
+def set_ac(on: bool) -> bool:
+    """Drives the AC via Home Assistant. Returns whether the call
+    succeeded, so the caller can retry on the next cycle instead of
+    silently losing the command if HA was briefly unreachable."""
+    service = "turn_on" if on else "turn_off"
+    return _call_service(HA_AC_DOMAIN, service, {"entity_id": HA_AC_ENTITY})
 
 
 def speak(message: str, entity_id: str = HA_SPEAKER_ENTITY) -> bool:
