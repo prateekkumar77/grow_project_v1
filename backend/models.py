@@ -98,6 +98,11 @@ class ReadingRow(SQLModel, table=True):
     temp_c: float
     humidity: float
     soil_moisture: float
+    # Pulled out of reported_relay_state as its own column so it can be
+    # queried/exported without parsing JSON. This is the ESP32's actual
+    # reported state (physical truth), not the commanded one - matches
+    # how the dashboard treats "reported" as ground truth elsewhere.
+    light_state: bool
     reported_relay_state: str  # JSON: {"fan": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str
