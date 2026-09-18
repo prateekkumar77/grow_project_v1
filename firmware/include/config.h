@@ -29,6 +29,7 @@
 #define RELAY_FAN_PIN 25
 #define RELAY_AC_PIN 26  // leave unwired if the AC is a Home Assistant/Google Home device instead
 #define RELAY_PUMP_PIN 27
+#define RELAY_LIGHT_PIN 33  // grow light - runs on its own backend-side schedule, no local logic
 #define RELAY_ACTIVE_LOW true  // most cheap relay boards trigger LOW = energized
 
 // ---------------------------------------------------------------------------

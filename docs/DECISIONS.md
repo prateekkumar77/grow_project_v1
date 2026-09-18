@@ -132,6 +132,61 @@ of silently decided.
     HA-only device, not something this change could route around -
     documented rather than silently accepted.
 
+## Light schedule
+
+- **A fourth, independent ESP32 relay, not folded into the auto/manual
+  relays**: the light gets its own `RELAY_LIGHT_PIN` (firmware) and its
+  own `light` field on `RelayState`, entirely separate from fan/ac/pump.
+  It is never passed to `decide_relay_state()` and is not gated by the
+  environmental `mode` at all - the requirement was explicit that light
+  "will not be affected by auto mode." A new relay channel was chosen
+  over repurposing the AC's now-unused pin (AC moved to Home Assistant
+  control, see above) to keep the two features independent: reconnecting
+  a physical AC relay later shouldn't have any bearing on the light relay.
+- **Schedule anchored to UTC midnight, not to when it was enabled**: the
+  brief describes a duration ("18 on / 6 off"), not a specific start
+  time, so `is_light_on(now_utc, on_hours)` is a pure function of the
+  current wall-clock time - light on hours `[0, on_hours)` UTC, off for
+  the rest of the day, every day. This was chosen over a rolling window
+  from whenever the schedule was switched on because a fixed daily anchor
+  is reproducible across backend restarts with no stored "next toggle"
+  state, and gives the plant a consistent photoperiod start time day to
+  day, which is closer to how a real light timer behaves. Trade-off: the
+  cycle boundary is always at 00:00 UTC, not local midnight - acceptable
+  since the rest of the backend already standardizes on UTC
+  (`datetime.utcnow()` throughout) with no timezone configuration
+  anywhere else.
+- **Schedule disabled by default** (`LIGHT_SCHEDULE_ENABLED_DEFAULT=false`):
+  mirrors the same reasoning as `mode` defaulting to `auto` and relays
+  defaulting off - a fresh deploy should never start actuating hardware
+  based on an unreviewed default (18h on_hours is a reasonable default
+  *value*, but silently running with it before a grower has confirmed
+  it's right for what's in the tent isn't). The grower opts in once via
+  the dashboard's schedule toggle.
+- **Master switch, not two independent settings**: `POST
+  /api/light/schedule` combines `enabled` and `on_hours` into one call
+  rather than having separate endpoints, and `on_hours` is always saved
+  even while the schedule is off (so it's ready the instant it's turned
+  on). `POST /api/light/manual` is rejected with `409` while the schedule
+  is enabled, deliberately mirroring how `/api/relay` already rejects a
+  manual fan/ac/pump command outside manual mode - one consistent pattern
+  for "who owns this relay right now" across the whole app, rather than
+  inventing a second one for light.
+- **No auto-revert for manual light control**: unlike the environmental
+  `mode`, switching the light's schedule off doesn't time out back to
+  schedule-on after inactivity. The brief describes the schedule toggle
+  itself as the intended control, not a temporary override, so an
+  auto-revert would fight the grower's explicit choice rather than protect
+  against forgetting a manual session.
+- **Commanded light state recomputed fresh on every read**, not cached
+  from the last telemetry cycle: `GET /api/status` and `POST
+  /api/telemetry` both call the same `_light_status()` helper against the
+  current time, rather than reading a value stored at the last ESP32 poll
+  (up to `TELEMETRY_INTERVAL_MS` old). This means the dashboard reflects a
+  schedule boundary the instant it's crossed - showing a "pending" state
+  until the ESP32's next poll actually applies it - rather than lagging by
+  up to one telemetry cycle.
+
 ## Frontend
 
 - **No external font/CDN dependency**: used the system monospace/sans font
@@ -159,6 +214,20 @@ of silently decided.
   static file, and it's fetched separately from `/api/status` since it's
   static for the life of the process and doesn't need to be re-fetched
   every 5s poll.
+- **Segmented-toggle CSS is scoped per-component by ID, not by a shared
+  class rule**: adding the light schedule toggle (manual | schedule)
+  alongside the existing mode toggle (auto | manual) surfaced a real bug -
+  a single rule `.segmented[data-mode="manual"] { transform:
+  translateX(100%); ... }` was written assuming "manual" is always the
+  second button, true for the mode toggle but not for the light toggle,
+  where manual is first. That collision visually broke the light toggle
+  (thumb landed under the wrong label, with the wrong accent color) the
+  first time two differently-ordered segmented controls existed on the
+  same page. Fixed by scoping each toggle's "shifted" state to its own
+  `#id[data-mode="..."]` selector instead of the shared class. Any future
+  segmented control needs its own scoped rule for the same reason - the
+  shared `.segmented`/`.segmented-thumb` base styling is fine to reuse,
+  the position/color override per state is not.
 
 ## Docker / infra
 

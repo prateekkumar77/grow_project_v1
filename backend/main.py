@@ -14,7 +14,11 @@ import ha_client
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
 from excel_export import export_readings_to_excel
+from light_schedule import is_light_on
 from models import (
+    LightManualIn,
+    LightScheduleIn,
+    LightStatus,
     ModeIn,
     ReadingRow,
     RelayIn,
@@ -42,6 +46,14 @@ HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 GROW_PROFILE_NAME = os.getenv("GROW_PROFILE_NAME", "Custom grow profile")
 TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
 
+# Light schedule defaults. Starts with the schedule OFF (light under
+# manual control, off) so a fresh deploy never starts cycling a light
+# based on an unreviewed default photoperiod - the grower opts in via the
+# dashboard once they've picked an on_hours value that's actually right
+# for what's in the tent.
+LIGHT_DEFAULT_ON_HOURS = int(os.getenv("LIGHT_DEFAULT_ON_HOURS", "18"))
+LIGHT_SCHEDULE_ENABLED_DEFAULT = os.getenv("LIGHT_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
+
 connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
@@ -64,6 +76,14 @@ class AppState:
         # instead of the ESP32's now-unused "ac" relay pin, and so we only
         # call HA when the desired state actually changes.
         self.last_ha_ac_state: Optional[bool] = None
+        # Light: independent of `mode` entirely. Either the schedule
+        # decides (is_light_on, recomputed fresh every time - no stored
+        # "next toggle" state) or, when the schedule is off, this manual
+        # value holds until the dashboard changes it.
+        self.light_schedule_enabled: bool = LIGHT_SCHEDULE_ENABLED_DEFAULT
+        self.light_on_hours: int = LIGHT_DEFAULT_ON_HOURS
+        self.light_commanded: bool = False
+        self.light_reported: Optional[bool] = None
 
 
 app_state = AppState()
@@ -118,6 +138,21 @@ def _maybe_send_alerts(reading: SensorReading, reported: RelayState) -> None:
         logger.exception("Alert dispatch failed")
 
 
+def _light_status(now: datetime) -> LightStatus:
+    """Must be called with app_state.lock held. Single source of truth for
+    "what should the light be doing right now" - used by /api/telemetry,
+    /api/status, and both light control endpoints, so they can never
+    disagree with each other."""
+    commanded = is_light_on(now, app_state.light_on_hours) if app_state.light_schedule_enabled else app_state.light_commanded
+    return LightStatus(
+        schedule_enabled=app_state.light_schedule_enabled,
+        on_hours=app_state.light_on_hours,
+        off_hours=24 - app_state.light_on_hours,
+        commanded=commanded,
+        reported=app_state.light_reported,
+    )
+
+
 def _sync_ac_to_ha(ac_on: bool) -> None:
     """Pushes the AC's desired state to Home Assistant - this is the only
     path that actually controls it, since it has no ESP32 relay. Skips the
@@ -147,6 +182,7 @@ def post_telemetry(
     with app_state.lock:
         app_state.last_seen = now
         app_state.reported_relay_state = payload.relay_state
+        app_state.light_reported = payload.relay_state.light
         app_state.latest_reading = reading
 
         if app_state.mode == "manual":
@@ -161,7 +197,12 @@ def post_telemetry(
                 baseline_humidity=baseline_humidity if baseline_humidity is not None else reading.humidity,
             )
             commanded = decide_relay_state(de_reading, app_state.commanded_relay_state)
-            app_state.commanded_relay_state = commanded
+
+        # Light is never touched by decide_relay_state() or the
+        # auto/manual mode above - it's driven entirely by its own
+        # schedule/manual switch, computed fresh every cycle.
+        commanded = commanded.model_copy(update={"light": _light_status(now).commanded})
+        app_state.commanded_relay_state = commanded
 
         mode = app_state.mode
 
@@ -189,9 +230,10 @@ def post_telemetry(
 @app.get("/api/status", response_model=StatusOut)
 def get_status():
     with app_state.lock:
+        now = datetime.utcnow()
         offline = (
             app_state.last_seen is None
-            or (datetime.utcnow() - app_state.last_seen).total_seconds() > OFFLINE_THRESHOLD_SECONDS
+            or (now - app_state.last_seen).total_seconds() > OFFLINE_THRESHOLD_SECONDS
         )
         # The ESP32's "ac" relay pin is unwired (AC is HA-only) and its
         # reported value is meaningless, so report our own last-confirmed
@@ -201,13 +243,22 @@ def get_status():
         if reported is not None and app_state.last_ha_ac_state is not None:
             reported = reported.model_copy(update={"ac": app_state.last_ha_ac_state})
 
+        # Commanded light state is recomputed fresh here (not read from
+        # commanded_relay_state, which only updates on the ESP32's own
+        # ~20s telemetry cadence) so the dashboard reflects a schedule
+        # boundary the moment it's crossed, not up to a cycle late.
+        commanded = app_state.commanded_relay_state.model_copy(
+            update={"light": _light_status(now).commanded}
+        )
+
         return StatusOut(
             mode=app_state.mode,
-            commanded_relay_state=app_state.commanded_relay_state,
+            commanded_relay_state=commanded,
             reported_relay_state=reported,
             last_seen=app_state.last_seen,
             latest_reading=app_state.latest_reading,
             offline=offline,
+            light=_light_status(now),
         )
 
 
@@ -276,6 +327,28 @@ def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
         background_tasks.add_task(_sync_ac_to_ha, payload.state)
 
     return result
+
+
+@app.post("/api/light/schedule", response_model=LightStatus)
+def set_light_schedule(payload: LightScheduleIn):
+    """Master switch for the light: enabling the schedule hands control to
+    is_light_on() (independent of the environmental auto/manual `mode`);
+    disabling it falls back to whatever was last set via
+    /api/light/manual. on_hours is always saved even when the schedule is
+    currently off, so it's ready as soon as it's turned on."""
+    with app_state.lock:
+        app_state.light_schedule_enabled = payload.enabled
+        app_state.light_on_hours = payload.on_hours
+        return _light_status(datetime.utcnow())
+
+
+@app.post("/api/light/manual", response_model=LightStatus)
+def set_light_manual(payload: LightManualIn):
+    with app_state.lock:
+        if app_state.light_schedule_enabled:
+            raise HTTPException(status_code=409, detail="light schedule is enabled")
+        app_state.light_commanded = payload.state
+        return _light_status(datetime.utcnow())
 
 
 @app.post("/api/export")
