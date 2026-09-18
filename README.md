@@ -91,6 +91,26 @@ display-only fields served from `GET /api/profile` and rendered by the
 dashboard on load. They don't feed the decision engine — change them
 purely to relabel what's currently in the tent.
 
+## Light schedule
+
+The grow light has its own ESP32 relay and its own daily on/off schedule
+— it is never touched by the decision engine or by auto/manual mode. Two
+states, switched from the dashboard:
+
+- **Schedule on**: the light follows a duty cycle anchored to 00:00 UTC —
+  on for `on_hours` (1-24, picked from a dashboard dropdown), off for the
+  rest of the day. Computed fresh from the current time every cycle, so
+  there's no stored timer to lose on a restart.
+- **Schedule off**: the light is under direct manual control from the
+  dashboard, holding whatever it was last set to.
+
+The schedule toggle is the master switch: `POST /api/light/manual` is
+rejected with `409` while the schedule is on, the same way `/api/relay`
+rejects a manual fan/AC/pump command outside manual mode. See
+`docs/automation-logic.md` for the full behavior and
+`docs/DECISIONS.md` for why it's a separate relay rather than reusing the
+AC's now-unused one.
+
 ## Repository layout
 
 ```
@@ -144,7 +164,9 @@ pio run --target upload
 | `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
-| `POST /api/relay` | Dashboard | command a single relay (manual mode only) |
+| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light) |
+| `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
+| `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | trigger an immediate Excel export |
 
 ## Home Assistant / Google Home
@@ -181,3 +203,11 @@ One consequence: the firmware's offline emergency-temperature floor
 protects the AC specifically if it has no relay — only the fan still has
 that offline backstop. See `docs/automation-logic.md` and
 `docs/DECISIONS.md` for the full reasoning.
+
+Because of that dependency, the dashboard puts AC control in its own
+"home assistant" panel, separate from the ESP32 relay tiles, with a live
+badge showing whether Home Assistant is actually reachable right now.
+That check runs on its own background schedule
+(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) against Home Assistant's
+own `GET /api/` health endpoint — never inline with a request — so a
+slow or hanging Home Assistant can't add latency to a dashboard load.

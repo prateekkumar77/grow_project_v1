@@ -6,204 +6,369 @@
 <title>Grow tent control</title>
 <style>
   :root {
-    --bg: #1c1712;
-    --panel: #241e17;
-    --panel-raised: #2c251c;
-    --border: #4a3f2f;
-    --border-dim: #362d22;
-    --text: #e8dfc8;
-    --text-dim: #a89a7c;
-    --text-faint: #6f6552;
-    --ok: #7c9a5c;
-    --warn: #c17d3f;
-    --danger: #a5473a;
-    --manual-wash: #2e2416;
-    --manual-border: #c17d3f;
+    --bg: #120e0a;
+    --panel: rgba(42, 34, 24, 0.55);
+    --panel-solid: #241d15;
+    --panel-raised: rgba(255, 255, 255, 0.04);
+    --border: rgba(196, 154, 108, 0.16);
+    --border-strong: rgba(196, 154, 108, 0.32);
+    --text: #f3ead9;
+    --text-dim: #b3a488;
+    --text-faint: #7c705a;
+
+    --amber: #e2954f;
+    --teal: #6bb4a8;
+    --moss: #93ac5c;
+
+    --ok: #7fb069;
+    --ok-glow: rgba(127, 176, 105, 0.35);
+    --warn: #e0a458;
+    --warn-glow: rgba(224, 164, 88, 0.3);
+    --danger: #d16a5a;
+    --danger-glow: rgba(209, 106, 90, 0.3);
+
+    --manual-accent: #e0a458;
+
     --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
     --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+
+    --radius: 16px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   * { box-sizing: border-box; }
 
   body {
     margin: 0;
-    background: var(--bg);
+    min-height: 100vh;
     color: var(--text);
     font-family: var(--font-sans);
-    min-height: 100vh;
-    padding: 24px 16px 60px;
+    padding: 28px 18px 60px;
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(680px 420px at 12% -8%, rgba(226, 149, 79, 0.14), transparent 60%),
+      radial-gradient(600px 460px at 108% 12%, rgba(107, 180, 168, 0.10), transparent 60%),
+      radial-gradient(900px 700px at 50% 120%, rgba(147, 172, 92, 0.08), transparent 60%);
+    background-attachment: fixed;
+    transition: background-color 0.5s var(--ease);
   }
 
   .wrap {
-    max-width: 780px;
+    max-width: 860px;
     margin: 0 auto;
+    animation: rise 0.5s var(--ease);
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   header {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: flex-start;
+    gap: 16px;
+    padding-bottom: 20px;
+    margin-bottom: 22px;
     border-bottom: 1px solid var(--border);
-    padding-bottom: 14px;
-    margin-bottom: 20px;
   }
 
   h1 {
-    font-size: 18px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: 21px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
     margin: 0;
     color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   h1 .sub {
     color: var(--text-dim);
     font-weight: 400;
     font-size: 13px;
-    margin-left: 10px;
+    letter-spacing: 0;
   }
 
-  #conn-badge {
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     font-family: var(--font-mono);
     font-size: 12px;
-    padding: 3px 8px;
+    padding: 6px 12px 6px 10px;
     border: 1px solid var(--border);
-    border-radius: 2px;
+    border-radius: 999px;
     color: var(--text-dim);
+    background: var(--panel-raised);
+    white-space: nowrap;
+    transition: border-color 0.3s var(--ease), color 0.3s var(--ease);
   }
 
-  #conn-badge[data-state="unreachable"] {
-    color: var(--danger);
-    border-color: var(--danger);
+  .status-badge .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    flex-shrink: 0;
   }
 
-  #conn-badge[data-state="stale"] {
-    color: var(--warn);
-    border-color: var(--warn);
+  .status-badge[data-state="ok"] { color: var(--ok); border-color: rgba(127, 176, 105, 0.35); }
+  .status-badge[data-state="ok"] .dot {
+    background: var(--ok);
+    box-shadow: 0 0 0 0 var(--ok-glow);
+    animation: pulse-ok 2s infinite;
   }
 
-  #conn-badge[data-state="ok"] {
-    color: var(--ok);
-    border-color: var(--border);
+  .status-badge[data-state="stale"] { color: var(--warn); border-color: rgba(224, 164, 88, 0.35); }
+  .status-badge[data-state="stale"] .dot { background: var(--warn); }
+
+  .status-badge[data-state="unreachable"] { color: var(--danger); border-color: rgba(209, 106, 90, 0.35); }
+  .status-badge[data-state="unreachable"] .dot {
+    background: var(--danger);
+    animation: pulse-danger 1.1s infinite;
+  }
+
+  .status-badge[data-state="unknown"] { color: var(--text-faint); border-color: var(--border); }
+  .status-badge[data-state="unknown"] .dot { background: var(--text-faint); }
+
+  @keyframes pulse-ok {
+    0% { box-shadow: 0 0 0 0 var(--ok-glow); }
+    70% { box-shadow: 0 0 0 6px rgba(127, 176, 105, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(127, 176, 105, 0); }
+  }
+
+  @keyframes pulse-danger {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
   }
 
   .banner {
-    display: none;
-    font-family: var(--font-mono);
+    display: grid;
+    grid-template-rows: 0fr;
+    margin-bottom: 0;
+    opacity: 0;
+    transition: grid-template-rows 0.35s var(--ease), opacity 0.3s var(--ease), margin 0.35s var(--ease);
+  }
+
+  .banner.show {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    margin-bottom: 16px;
+  }
+
+  .banner > div {
+    overflow: hidden;
+  }
+
+  .banner .inner {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
     font-size: 13px;
-    padding: 10px 14px;
+    line-height: 1.5;
+    padding: 12px 14px;
+    border-radius: 12px;
     border: 1px solid var(--danger);
-    color: var(--danger);
-    background: rgba(165, 71, 58, 0.08);
-    margin-bottom: 18px;
+    color: #f3d6cf;
+    background: linear-gradient(135deg, rgba(209, 106, 90, 0.14), rgba(209, 106, 90, 0.04));
   }
 
-  .banner.stale {
+  .banner.stale .inner {
     border-color: var(--warn);
-    color: var(--warn);
-    background: rgba(193, 125, 63, 0.08);
+    color: #f5e2c8;
+    background: linear-gradient(135deg, rgba(224, 164, 88, 0.14), rgba(224, 164, 88, 0.04));
   }
 
-  .banner.show { display: block; }
+  .banner svg { flex-shrink: 0; margin-top: 1px; }
 
   .panel {
+    position: relative;
     background: var(--panel);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
     border: 1px solid var(--border);
-    padding: 18px;
+    border-radius: var(--radius);
+    padding: 20px;
     margin-bottom: 18px;
-    transition: background 0.3s ease, border-color 0.3s ease;
+    box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.6);
+    transition: background 0.4s var(--ease), border-color 0.4s var(--ease);
   }
 
   body.manual .panel {
-    background: var(--manual-wash);
-    border-color: var(--manual-border);
+    background: linear-gradient(160deg, rgba(224, 164, 88, 0.10), rgba(42, 34, 24, 0.55));
+    border-color: rgba(224, 164, 88, 0.4);
   }
 
-  body.manual::before {
-    content: "manual mode";
+  .manual-strip {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     position: fixed;
     top: 0; left: 0; right: 0;
-    text-align: center;
     font-family: var(--font-mono);
     font-size: 11px;
-    letter-spacing: 0.08em;
-    color: #17130d;
-    background: var(--manual-border);
-    padding: 3px 0;
-    z-index: 10;
+    letter-spacing: 0.1em;
+    color: #1c1408;
+    background: linear-gradient(90deg, #e0a458, #eab776, #e0a458);
+    background-size: 200% 100%;
+    padding: 6px 0;
+    z-index: 20;
+    animation: shift-gradient 4s linear infinite;
   }
 
-  body.manual { padding-top: 44px; }
+  @keyframes shift-gradient {
+    to { background-position: 200% 0; }
+  }
 
-  .readouts {
+  body.manual .manual-strip { display: flex; }
+  body.manual { padding-top: 50px; }
+
+  .grid-3 {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 14px;
   }
 
   .readout {
-    border: 1px solid var(--border-dim);
-    padding: 12px 10px;
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 12px;
     text-align: center;
+    background: var(--panel-raised);
+    overflow: hidden;
+  }
+
+  .readout::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(120px 60px at 50% 0%, var(--accent-glow, transparent), transparent 70%);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .readout[data-metric="temp"] { --accent: var(--amber); --accent-glow: rgba(226, 149, 79, 0.35); }
+  .readout[data-metric="humidity"] { --accent: var(--teal); --accent-glow: rgba(107, 180, 168, 0.35); }
+  .readout[data-metric="soil"] { --accent: var(--moss); --accent-glow: rgba(147, 172, 92, 0.35); }
+
+  .readout .icon {
+    color: var(--accent);
+    margin-bottom: 8px;
   }
 
   .readout .label {
     font-size: 12px;
     color: var(--text-dim);
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
   .readout .value {
     font-family: var(--font-mono);
-    font-size: 30px;
+    font-size: clamp(26px, 6vw, 32px);
+    font-weight: 500;
     line-height: 1;
     color: var(--text);
+    transition: color 0.2s var(--ease);
   }
+
+  .readout .value.flash { color: var(--accent); }
 
   .readout .unit {
     font-family: var(--font-mono);
-    font-size: 14px;
+    font-size: 13px;
     color: var(--text-faint);
+    margin-left: 2px;
   }
 
   .row {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
     margin-bottom: 14px;
   }
 
   .row:last-child { margin-bottom: 0; }
 
   .section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 12px;
+    font-weight: 600;
     color: var(--text-dim);
-    text-transform: none;
-    margin: 0 0 12px;
+    margin: 0 0 14px;
     letter-spacing: 0.02em;
   }
 
-  .mode-toggle {
-    display: flex;
-    border: 1px solid var(--border);
+  .section-title svg { color: var(--text-faint); }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 18px;
   }
 
-  .mode-toggle button {
+  @media (min-width: 700px) {
+    .two-col { grid-template-columns: 280px 1fr; }
+  }
+
+  .segmented {
+    position: relative;
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px;
+    background: var(--panel-raised);
+  }
+
+  .segmented-thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(196, 154, 108, 0.5), rgba(196, 154, 108, 0.25));
+    border: 1px solid var(--border-strong);
+    transition: transform 0.3s var(--ease);
+  }
+
+  /* mode-toggle: auto | manual - thumb shifts right for manual (2nd button) */
+  #mode-toggle[data-mode="manual"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(224, 164, 88, 0.55), rgba(224, 164, 88, 0.3));
+    border-color: var(--warn);
+  }
+
+  /* light-toggle: manual | schedule - thumb shifts right for schedule (2nd button) */
+  #light-toggle[data-mode="schedule"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(107, 180, 168, 0.55), rgba(107, 180, 168, 0.3));
+    border-color: var(--teal);
+  }
+
+  .segmented button {
+    position: relative;
+    z-index: 1;
     font-family: var(--font-sans);
     font-size: 13px;
-    padding: 7px 16px;
+    font-weight: 500;
+    padding: 7px 18px;
     background: transparent;
     border: none;
     color: var(--text-dim);
     cursor: pointer;
+    border-radius: 999px;
+    transition: color 0.25s var(--ease);
   }
 
-  .mode-toggle button.active {
-    background: var(--border);
-    color: var(--text);
-  }
-
-  .mode-toggle button:disabled { cursor: not-allowed; opacity: 0.5; }
+  .segmented button.active { color: var(--text); }
 
   .meta {
     font-family: var(--font-mono);
@@ -213,37 +378,51 @@
 
   .relays {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 14px;
   }
 
   .relay {
-    border: 1px solid var(--border-dim);
-    padding: 12px;
-    text-align: center;
     position: relative;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 12px;
+    text-align: center;
+    background: var(--panel-raised);
+    transition: border-color 0.25s var(--ease);
   }
 
   .relay .label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     font-size: 12px;
     color: var(--text-dim);
     margin-bottom: 10px;
   }
+
+  .relay .label svg { color: var(--text-faint); }
 
   .relay button {
     width: 100%;
     padding: 10px 0;
     font-family: var(--font-mono);
     font-size: 13px;
-    background: var(--panel-raised);
+    font-weight: 500;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.18);
     border: 1px solid var(--border);
     color: var(--text-faint);
     cursor: not-allowed;
+    transition: all 0.25s var(--ease);
   }
 
   .relay button.on {
-    color: var(--ok);
+    color: #d9f0cd;
     border-color: var(--ok);
+    background: linear-gradient(135deg, rgba(127, 176, 105, 0.28), rgba(127, 176, 105, 0.1));
+    box-shadow: 0 0 16px -4px var(--ok-glow);
   }
 
   body.manual .relay button {
@@ -251,90 +430,265 @@
     color: var(--text);
   }
 
-  body.manual .relay button.on {
-    color: var(--ok);
-    border-color: var(--ok);
-    background: rgba(124, 154, 92, 0.12);
-  }
+  body.manual .relay button:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  body.manual .relay button:active { transform: translateY(0); }
+
+  body.manual .relay button.on { color: #d9f0cd; }
 
   .relay .pending {
     display: none;
-    margin-top: 8px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    margin-top: 9px;
     font-size: 11px;
     color: var(--warn);
     font-family: var(--font-mono);
   }
 
-  .relay.pending .pending { display: block; }
+  .relay .pending .blip {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--warn);
+    animation: pulse-danger 1s infinite;
+  }
+
+  .relay.pending .pending { display: flex; }
+  .relay.pending { border-color: rgba(224, 164, 88, 0.45); }
+
+  /* Generic "single control with a pending state" row, shared by the
+     light panel and the Home Assistant/AC panel. */
+  .control-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  .control-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .control-btn {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 10px 24px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--border);
+    color: var(--text-faint);
+    cursor: not-allowed;
+    transition: all 0.25s var(--ease);
+  }
+
+  .control-btn.on {
+    color: #fbe9c4;
+    border-color: var(--amber);
+    background: linear-gradient(135deg, rgba(226, 149, 79, 0.3), rgba(226, 149, 79, 0.1));
+    box-shadow: 0 0 16px -4px rgba(226, 149, 79, 0.4);
+  }
+
+  /* AC's "on" accent is teal (Home Assistant / external integration)
+     rather than amber (used for the light, a direct local relay) - a
+     deliberate visual cue that this control takes a different path. */
+  .control-btn.on.ac {
+    color: #d7f0ec;
+    border-color: var(--teal);
+    background: linear-gradient(135deg, rgba(107, 180, 168, 0.3), rgba(107, 180, 168, 0.1));
+    box-shadow: 0 0 16px -4px rgba(107, 180, 168, 0.4);
+  }
+
+  .control-btn.enabled {
+    cursor: pointer;
+    color: var(--text);
+  }
+
+  .control-btn.enabled:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .control-btn.enabled:active { transform: translateY(0); }
+
+  .control-pending {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--warn);
+    font-family: var(--font-mono);
+  }
+
+  .control-pending.show { display: flex; }
+
+  .control-pending .blip {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--warn);
+    animation: pulse-danger 1s infinite;
+  }
+
+  .light-schedule-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .light-schedule-controls select {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .light-schedule-controls select:focus { outline: 1px solid var(--border-strong); }
 
   footer {
-    margin-top: 26px;
+    margin-top: 28px;
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-faint);
     text-align: center;
+    letter-spacing: 0.02em;
+  }
+
+  @media (max-width: 480px) {
+    .grid-3 { grid-template-columns: 1fr 1fr; }
+    .grid-3 > :last-child { grid-column: 1 / -1; }
   }
 </style>
 </head>
 <body>
+
+<div class="manual-strip">manual mode &mdash; automation paused</div>
+
 <div class="wrap">
 
   <header>
     <h1>Grow tent control<span class="sub" id="profile-label"></span></h1>
-    <span id="conn-badge" data-state="unreachable">connecting&hellip;</span>
+    <span id="conn-badge" class="status-badge" data-state="unreachable"><span class="dot"></span><span class="text">connecting&hellip;</span></span>
   </header>
 
-  <div id="banner-unreachable" class="banner">backend unreachable &mdash; the dashboard cannot reach the server itself. Retrying every 5s.</div>
-  <div id="banner-stale" class="banner stale">sensor offline &mdash; the backend is up, but the ESP32 has not reported in a while. Showing last known readings.</div>
+  <div id="banner-unreachable" class="banner">
+    <div><div class="inner">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span>backend unreachable &mdash; the dashboard cannot reach the server itself. Retrying every 5s.</span>
+    </div></div>
+  </div>
+  <div id="banner-stale" class="banner stale">
+    <div><div class="inner">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+      <span>sensor offline &mdash; the backend is up, but the ESP32 has not reported in a while. Showing last known readings.</span>
+    </div></div>
+  </div>
 
   <div class="panel">
-    <div class="readouts">
-      <div class="readout">
+    <div class="grid-3">
+      <div class="readout" data-metric="temp">
+        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2 2 0 0 0-4 0v11.26a4 4 0 1 0 4 0Z"/></svg></div>
         <div class="label">temperature</div>
-        <div><span class="value" id="val-temp">--</span><span class="unit">&deg;c</span></div>
+        <div><span class="value" id="val-temp">&ndash;&ndash;</span><span class="unit">&deg;c</span></div>
       </div>
-      <div class="readout">
+      <div class="readout" data-metric="humidity">
+        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s7 7.2 7 12a7 7 0 1 1-14 0c0-4.8 7-12 7-12Z"/></svg></div>
         <div class="label">humidity</div>
-        <div><span class="value" id="val-humidity">--</span><span class="unit">%</span></div>
+        <div><span class="value" id="val-humidity">&ndash;&ndash;</span><span class="unit">%</span></div>
       </div>
-      <div class="readout">
+      <div class="readout" data-metric="soil">
+        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V10"/><path d="M12 14c0-4 3-5.5 7-5.5-.3 4-2.7 6-7 5.5Z"/><path d="M12 17c0-3.2-2.4-4.6-5.5-4.8.2 3.4 2.2 5.2 5.5 4.8Z"/></svg></div>
         <div class="label">soil moisture</div>
-        <div><span class="value" id="val-soil">--</span><span class="unit">%</span></div>
+        <div><span class="value" id="val-soil">&ndash;&ndash;</span><span class="unit">%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div class="panel">
+      <div class="section-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+        mode
+      </div>
+      <div class="row">
+        <div class="segmented" id="mode-toggle" data-mode="auto">
+          <span class="segmented-thumb"></span>
+          <button id="btn-auto" class="active">auto</button>
+          <button id="btn-manual">manual</button>
+        </div>
+      </div>
+      <div class="row">
+        <span class="meta" id="last-seen">last seen: &ndash;&ndash;</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="section-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 4v16M4 9h5"/></svg>
+        relays
+      </div>
+      <div class="relays">
+        <div class="relay" id="relay-fan" data-relay="fan">
+          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 12c1.5-3 1-6-1.5-7.5C8.5 6 8.7 9.3 12 12Z"/><path d="M12 12c3 1.5 6 1 7.5-1.5-2-2-5.3-1.8-7.5 1.5Z"/><path d="M12 12c-1.5 3-1 6 1.5 7.5C15.5 18 15.3 14.7 12 12Z"/></svg>fan</div>
+          <button>off</button>
+          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+        </div>
+        <div class="relay" id="relay-pump" data-relay="pump">
+          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
+          <button>off</button>
+          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+        </div>
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="row">
-      <div class="section-title">mode</div>
-      <div class="mode-toggle">
-        <button id="btn-auto" class="active">auto</button>
-        <button id="btn-manual">manual</button>
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      light
+      <span class="meta" style="margin-left: auto; font-weight: 400;">not affected by auto mode</span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn" id="light-manual-btn">off</button>
+        <div class="control-pending" id="light-pending"><span class="blip"></span>pending&hellip;</div>
+      </div>
+
+      <div class="segmented" id="light-toggle" data-mode="manual">
+        <span class="segmented-thumb"></span>
+        <button id="light-btn-manual" class="active">manual</button>
+        <button id="light-btn-schedule">schedule</button>
       </div>
     </div>
-    <div class="row">
-      <span class="meta" id="last-seen">last seen: --</span>
+
+    <div class="row" style="margin-top: 16px;">
+      <div class="light-schedule-controls">
+        <label class="meta" for="light-on-hours">light on for</label>
+        <select id="light-on-hours"></select>
+        <span class="meta" id="light-off-hours">off for 6h</span>
+      </div>
     </div>
   </div>
 
   <div class="panel">
-    <div class="section-title">relays</div>
-    <div class="relays">
-      <div class="relay" id="relay-fan" data-relay="fan">
-        <div class="label">fan</div>
-        <button>off</button>
-        <div class="pending">pending&hellip;</div>
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10a6 6 0 0 1 12 0v1a4 4 0 0 1-1 7.9M6 10a4 4 0 0 0-1 7.9M6 10v1a4 4 0 0 0 1 7.9m6-16.8V4m0 3v13"/></svg>
+      home assistant
+      <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn ac" id="ac-btn">off</button>
+        <div class="control-pending" id="ac-pending"><span class="blip"></span>pending&hellip;</div>
       </div>
-      <div class="relay" id="relay-ac" data-relay="ac">
-        <div class="label">ac</div>
-        <button>off</button>
-        <div class="pending">pending&hellip;</div>
-      </div>
-      <div class="relay" id="relay-pump" data-relay="pump">
-        <div class="label">pump</div>
-        <button>off</button>
-        <div class="pending">pending&hellip;</div>
-      </div>
+      <span class="meta">ac &middot; via Home Assistant, not a local relay</span>
     </div>
   </div>
 
@@ -344,17 +698,33 @@
 <script>
 (function () {
   var POLL_MS = 5000;
-  var relays = ["fan", "ac", "pump"];
+  var relays = ["fan", "pump"];
   var currentMode = "auto";
+  var currentLightScheduleEnabled = false;
+  var lastValues = { temp: null, humidity: null, soil: null };
 
   function fmt(n) {
     return (typeof n === "number") ? n.toFixed(1) : "--";
   }
 
-  function setConnBadge(state, text) {
-    var el = document.getElementById("conn-badge");
+  function setValue(key, elId, n) {
+    var el = document.getElementById(elId);
+    var text = fmt(n);
+    if (el.textContent !== text) {
+      el.textContent = text;
+      if (lastValues[key] !== null && typeof n === "number") {
+        el.classList.remove("flash");
+        void el.offsetWidth;
+        el.classList.add("flash");
+      }
+      lastValues[key] = n;
+    }
+  }
+
+  function setBadge(elId, state, text) {
+    var el = document.getElementById(elId);
     el.dataset.state = state;
-    el.textContent = text;
+    el.querySelector(".text").textContent = text;
   }
 
   function showBanner(id, show) {
@@ -362,14 +732,15 @@
   }
 
   function applyStatus(status) {
-    document.getElementById("val-temp").textContent = status.latest_reading ? fmt(status.latest_reading.temp_c) : "--";
-    document.getElementById("val-humidity").textContent = status.latest_reading ? fmt(status.latest_reading.humidity) : "--";
-    document.getElementById("val-soil").textContent = status.latest_reading ? fmt(status.latest_reading.soil_moisture) : "--";
+    setValue("temp", "val-temp", status.latest_reading ? status.latest_reading.temp_c : null);
+    setValue("humidity", "val-humidity", status.latest_reading ? status.latest_reading.humidity : null);
+    setValue("soil", "val-soil", status.latest_reading ? status.latest_reading.soil_moisture : null);
 
     document.getElementById("last-seen").textContent = "last seen: " + (status.last_seen ? new Date(status.last_seen + "Z").toLocaleTimeString() : "never");
 
     currentMode = status.mode;
     document.body.classList.toggle("manual", status.mode === "manual");
+    document.getElementById("mode-toggle").dataset.mode = status.mode;
     document.getElementById("btn-auto").classList.toggle("active", status.mode === "auto");
     document.getElementById("btn-manual").classList.toggle("active", status.mode === "manual");
 
@@ -390,7 +761,55 @@
 
     showBanner("banner-stale", !!status.offline);
     showBanner("banner-unreachable", false);
-    setConnBadge(status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
+    setBadge("conn-badge", status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
+
+    applyLightStatus(status.light);
+    applyAcAndHaStatus(status);
+  }
+
+  function applyAcAndHaStatus(status) {
+    var ha = status.ha || {};
+    var haState = ha.reachable === true ? "ok" : ha.reachable === false ? "unreachable" : "unknown";
+    var haText = haState === "ok" ? "connected" : haState === "unreachable" ? "unreachable" : "checking…";
+    setBadge("ha-badge", haState, haText);
+
+    var manual = status.mode === "manual";
+    var btn = document.getElementById("ac-btn");
+    var commanded = status.commanded_relay_state ? status.commanded_relay_state.ac : false;
+    var reported = status.reported_relay_state ? status.reported_relay_state.ac : commanded;
+
+    btn.textContent = reported ? "on" : "off";
+    btn.classList.toggle("on", !!reported);
+    btn.classList.toggle("enabled", manual);
+    btn.disabled = !manual;
+
+    var pending = status.reported_relay_state != null && commanded !== reported;
+    document.getElementById("ac-pending").classList.toggle("show", pending);
+  }
+
+  function applyLightStatus(light) {
+    if (!light) return;
+    currentLightScheduleEnabled = light.schedule_enabled;
+
+    document.getElementById("light-toggle").dataset.mode = light.schedule_enabled ? "schedule" : "manual";
+    document.getElementById("light-btn-manual").classList.toggle("active", !light.schedule_enabled);
+    document.getElementById("light-btn-schedule").classList.toggle("active", light.schedule_enabled);
+
+    var btn = document.getElementById("light-manual-btn");
+    var reported = light.reported != null ? light.reported : light.commanded;
+    btn.textContent = reported ? "on" : "off";
+    btn.classList.toggle("on", !!reported);
+    btn.classList.toggle("enabled", !light.schedule_enabled);
+    btn.disabled = light.schedule_enabled;
+
+    var pending = light.reported != null && light.commanded !== light.reported;
+    document.getElementById("light-pending").classList.toggle("show", pending);
+
+    var select = document.getElementById("light-on-hours");
+    if (document.activeElement !== select) {
+      select.value = String(light.on_hours);
+    }
+    document.getElementById("light-off-hours").textContent = "off for " + light.off_hours + "h";
   }
 
   function loadProfile() {
@@ -418,7 +837,8 @@
       })
       .then(applyStatus)
       .catch(function () {
-        setConnBadge("unreachable", "unreachable");
+        setBadge("conn-badge", "unreachable", "unreachable");
+        setBadge("ha-badge", "unknown", "unknown");
         showBanner("banner-unreachable", true);
         showBanner("banner-stale", false);
       });
@@ -452,6 +872,57 @@
         body: JSON.stringify({ relay: name, state: turningOn }),
       }).then(poll);
     });
+  });
+
+  document.getElementById("ac-btn").addEventListener("click", function (e) {
+    if (currentMode !== "manual") return;
+    var turningOn = !e.currentTarget.classList.contains("on");
+    fetch("/api/relay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relay: "ac", state: turningOn }),
+    }).then(poll);
+  });
+
+  (function populateLightHourOptions() {
+    var select = document.getElementById("light-on-hours");
+    for (var h = 1; h <= 24; h++) {
+      var opt = document.createElement("option");
+      opt.value = String(h);
+      opt.textContent = h + "h";
+      select.appendChild(opt);
+    }
+  })();
+
+  function postLightSchedule(enabled) {
+    var onHours = parseInt(document.getElementById("light-on-hours").value, 10);
+    fetch("/api/light/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: enabled, on_hours: onHours }),
+    }).then(poll);
+  }
+
+  document.getElementById("light-manual-btn").addEventListener("click", function (e) {
+    if (currentLightScheduleEnabled) return;
+    var turningOn = !e.currentTarget.classList.contains("on");
+    fetch("/api/light/manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: turningOn }),
+    }).then(poll);
+  });
+
+  document.getElementById("light-btn-manual").addEventListener("click", function () {
+    postLightSchedule(false);
+  });
+
+  document.getElementById("light-btn-schedule").addEventListener("click", function () {
+    postLightSchedule(true);
+  });
+
+  document.getElementById("light-on-hours").addEventListener("change", function () {
+    postLightSchedule(currentLightScheduleEnabled);
   });
 
   loadProfile();

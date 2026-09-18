@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Field, SQLModel
 
 
@@ -10,6 +10,11 @@ class RelayState(BaseModel):
     fan: bool = False
     ac: bool = False
     pump: bool = False
+    # Grow light. Has its own ESP32 relay like fan/pump, but is never
+    # touched by decide_relay_state() or the auto/manual environmental
+    # mode - it's driven entirely by the light schedule (or manual light
+    # control when that schedule is off). See LightStatus below.
+    light: bool = False
 
 
 class SensorReading(BaseModel):
@@ -42,6 +47,32 @@ class RelayIn(BaseModel):
     state: bool
 
 
+class LightScheduleIn(BaseModel):
+    enabled: bool
+    on_hours: int = PydanticField(ge=1, le=24)
+
+
+class LightManualIn(BaseModel):
+    state: bool
+
+
+class LightStatus(BaseModel):
+    schedule_enabled: bool
+    on_hours: int
+    off_hours: int
+    commanded: bool
+    reported: Optional[bool] = None
+
+
+class HaStatus(BaseModel):
+    # None = not checked yet (e.g. right after backend startup, before the
+    # first scheduled health check completes) - distinct from a known-bad
+    # False, so the dashboard can show "checking..." rather than a false
+    # "unreachable".
+    reachable: Optional[bool] = None
+    checked_at: Optional[datetime] = None
+
+
 class StatusOut(BaseModel):
     mode: Literal["auto", "manual"]
     commanded_relay_state: RelayState
@@ -49,6 +80,8 @@ class StatusOut(BaseModel):
     last_seen: Optional[datetime]
     latest_reading: Optional[SensorReading]
     offline: bool
+    light: LightStatus
+    ha: HaStatus
 
 
 # --- persistence --------------------------------------------------------------------
@@ -65,6 +98,6 @@ class ReadingRow(SQLModel, table=True):
     temp_c: float
     humidity: float
     soil_moisture: float
-    reported_relay_state: str  # JSON: {"fan": bool, "ac": bool, "pump": bool}
+    reported_relay_state: str  # JSON: {"fan": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str

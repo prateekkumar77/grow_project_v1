@@ -52,7 +52,7 @@ static void runTelemetryCycle() {
 
   bool ok = network_post_telemetry(reading, actual, mode, commanded);
   if (ok) {
-    relays.applyCommand(commanded.fan, commanded.ac, commanded.pump);
+    relays.applyCommand(commanded.fan, commanded.ac, commanded.pump, commanded.light);
   } else {
     // The instant a telemetry POST fails: kill the pump, unconditionally.
     relays.forcePumpOff();

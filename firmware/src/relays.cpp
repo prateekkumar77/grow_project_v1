@@ -14,9 +14,11 @@ void RelayController::begin() {
   pinMode(RELAY_FAN_PIN, OUTPUT);
   pinMode(RELAY_AC_PIN, OUTPUT);
   pinMode(RELAY_PUMP_PIN, OUTPUT);
+  pinMode(RELAY_LIGHT_PIN, OUTPUT);
   setFan(false);
   setAc(false);
   setPump(false);
+  setLight(false);
 }
 
 void RelayController::setFan(bool on) {
@@ -34,9 +36,15 @@ void RelayController::setPump(bool on) {
   writePin(RELAY_PUMP_PIN, on);
 }
 
-void RelayController::applyCommand(bool fan, bool ac, bool pump) {
+void RelayController::setLight(bool on) {
+  _light = on;
+  writePin(RELAY_LIGHT_PIN, on);
+}
+
+void RelayController::applyCommand(bool fan, bool ac, bool pump, bool light) {
   setFan(fan);
   setAc(ac);
+  setLight(light);
 
   if (pump && !_pump) {
     // Turning the pump on: refuse if we're still in a cap-triggered cooldown.

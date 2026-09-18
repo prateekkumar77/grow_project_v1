@@ -3,8 +3,14 @@
 Plain-language description of how the grow tent decides what to do. The
 ESP32 never makes environmental decisions itself — it only reports sensor
 readings and its actual relay states, and applies whatever the backend
-tells it to do. All of the logic below runs in `backend/decision_engine.py`
-and only applies when the system is in **auto** mode.
+tells it to do.
+
+Everything from here down through "Manual mode" covers **fan, AC, and
+pump** — the three relays `backend/decision_engine.py` actually decides,
+and only while the system is in **auto** mode. The **light** is covered
+separately, below, because it isn't part of any of that: it has its own
+schedule and is never touched by `decide_relay_state()` or by auto/manual
+mode at all.
 
 ## What gets measured
 
@@ -77,6 +83,17 @@ other relays have: if the network or Home Assistant is down, the AC just
 stays wherever it last was, with no local device watching temperature for
 it. See the note on `EMERGENCY_TEMP_C` below.
 
+Because AC control depends entirely on Home Assistant being reachable,
+the dashboard gives it its own panel, separate from the ESP32 relay tiles,
+with a live "is Home Assistant actually reachable right now" indicator.
+The backend checks this independently of any AC command - a background
+job (`scheduler._check_ha_connection`, every `HA_HEALTH_CHECK_INTERVAL_SECONDS`,
+default 30s) calls `ha_client.check_connection()` (`GET {HA_URL}/api/`,
+Home Assistant's own health-check endpoint) and caches the result. `GET
+/api/status` just reports that cached value instantly - the check never
+runs on a request path, so a slow or hanging Home Assistant can't add
+latency to a page load the way an inline check would.
+
 ## Manual mode
 
 When the dashboard puts the system in **manual**, the decision engine is
@@ -89,6 +106,36 @@ piece of backend logic.
 Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
 (default 30) of no dashboard activity, so a manual session can't be
 forgotten and left uncontrolled indefinitely.
+
+## Light: its own schedule, independent of mode
+
+The grow light has its own ESP32 relay, just like fan and pump — but it is
+**never** decided by `decide_relay_state()` and is completely unaffected
+by whether the system is in auto or manual mode. It has exactly two states
+of its own, controlled from the dashboard:
+
+- **Schedule on**: the light follows a daily duty cycle, computed fresh
+  every telemetry cycle from the current time — there's no stored "next
+  toggle" timer to lose track of, so it's correct immediately even right
+  after a backend restart. You set how many hours per day it should be on
+  (`on_hours`, 1–24, picked from the dashboard's dropdown); off-hours is
+  always `24 - on_hours`, computed automatically. The cycle is anchored to
+  **00:00 UTC** every day: light on hours 1 (say, `on_hours = 18`) means on
+  from 00:00 to 18:00 UTC, then off from 18:00 to 24:00, repeating daily.
+- **Schedule off**: the light is under direct manual control from the
+  dashboard (`POST /api/light/manual`) — it just holds whatever it was
+  last set to, with no automatic behavior at all.
+
+The dashboard's schedule toggle is the master switch between these two
+states; attempting a manual command while the schedule is on is rejected
+(`409`), the same way `/api/relay` rejects a manual fan/AC/pump command
+outside manual mode.
+
+There's no offline-specific logic for the light beyond what every other
+physical relay already gets: it holds its last-commanded state if the
+network drops, same as fan. Unlike fan, though, its schedule keeps
+computing correctly in the background even while offline — it just can't
+reach the ESP32 to apply a change until connectivity returns.
 
 ## What the firmware does entirely on its own
 

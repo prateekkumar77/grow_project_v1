@@ -32,6 +32,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   relayState["fan"] = actual.fan;
   relayState["ac"] = actual.ac;
   relayState["pump"] = actual.pump;
+  relayState["light"] = actual.light;
 
   String body;
   serializeJson(req, body);
@@ -62,6 +63,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   outCommanded.fan = cmd["fan"] | false;
   outCommanded.ac = cmd["ac"] | false;
   outCommanded.pump = cmd["pump"] | false;
+  outCommanded.light = cmd["light"] | false;
 
   return true;
 }
