@@ -85,6 +85,12 @@ Swap in a different `.env` (or maintain one per grow stage and switch
 between them) to reuse this same system across completely different
 grows.
 
+The dashboard header reflects this too, rather than naming a plant in
+code: `GROW_PROFILE_NAME` and `TENT_SIZE_M2` in `.env` are free-text,
+display-only fields served from `GET /api/profile` and rendered by the
+dashboard on load. They don't feed the decision engine — change them
+purely to relabel what's currently in the tent.
+
 ## Repository layout
 
 ```
@@ -135,6 +141,7 @@ pio run --target upload
 |---|---|---|
 | `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
 | `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading |
+| `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
 | `POST /api/relay` | Dashboard | command a single relay (manual mode only) |

@@ -280,7 +280,7 @@
 <div class="wrap">
 
   <header>
-    <h1>Grow tent control<span class="sub">Bubblegum Auto Fem &middot; 0.5m&sup2;</span></h1>
+    <h1>Grow tent control<span class="sub" id="profile-label"></span></h1>
     <span id="conn-badge" data-state="unreachable">connecting&hellip;</span>
   </header>
 
@@ -393,6 +393,23 @@
     setConnBadge(status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
   }
 
+  function loadProfile() {
+    fetch("/api/profile")
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status " + r.status);
+        return r.json();
+      })
+      .then(function (profile) {
+        var label = profile.profile_name || "Custom grow profile";
+        if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
+        document.getElementById("profile-label").textContent = label;
+      })
+      .catch(function () {
+        // Non-critical - leave the header without a subtitle rather than
+        // blocking the rest of the dashboard on this.
+      });
+  }
+
   function poll() {
     fetch("/api/status")
       .then(function (r) {
@@ -437,6 +454,7 @@
     });
   });
 
+  loadProfile();
   poll();
   setInterval(poll, POLL_MS);
 })();
