@@ -90,6 +90,47 @@ of silently decided.
   ships with the current (2024+) `media_player_entity_id` + `cache` shape
   and a comment calling out that it needs to be verified against the
   user's actual HA version before relying on it.
+- **AC as a Home-Assistant-only device (no ESP32 relay)**: for a real
+  deployment where the AC is itself a Google Home device rather than
+  something wired into the relay board, added `ha_client.set_ac()` /
+  `HA_AC_ENTITY` / `HA_AC_DOMAIN` and had the backend push AC state to HA
+  directly instead of via the ESP32. Specific choices:
+  - **Configurable domain** (`HA_AC_DOMAIN`, default `switch`): an AC on a
+    smart plug is a `switch.*` entity; a native smart AC/mini-split is
+    usually `climate.*`. Rather than guess which one a given user has,
+    the domain (and thus which HA service gets called) is an env var.
+  - **Backgrounded, not synchronous**: `/api/telemetry` now schedules the
+    HA push via FastAPI `BackgroundTasks` instead of calling it inline.
+    Before this change, a slow Home Assistant call could add up to
+    `HA_REQUEST_TIMEOUT_SECONDS` (default 5s) of latency to the
+    `/api/telemetry` response — uncomfortably close to the firmware's own
+    ~5s HTTP timeout, risking a telemetry POST timing out on the ESP32
+    side purely because HA was slow, which would then trip the firmware's
+    "POST failed → force pump off" safety path for an unrelated reason.
+    Applied the same backgrounding to the existing alert dispatch for
+    consistency.
+  - **`/api/relay` pushes AC changes immediately**: fan/pump manual
+    commands rely on the ESP32 polling `commanded_relay_state` on its next
+    cycle, but there's no ESP32 relay for AC to poll into. Without an
+    immediate push, a manual AC toggle from the dashboard would silently
+    do nothing until the next telemetry cycle (up to
+    `TELEMETRY_INTERVAL_MS`, default 20s) coincidentally re-synced it.
+  - **`/api/status` reports HA-confirmed state, not the ESP32's**: the
+    ESP32 still receives and could report back an `ac` value from its
+    (now unwired) relay pin, but that value means nothing physically.
+    `get_status()` substitutes `AppState.last_ha_ac_state` — the last
+    state actually confirmed applied via a successful HA call — so the
+    dashboard's pending indicator compares against reality instead of a
+    disconnected GPIO pin.
+  - **Retry semantics**: `_sync_ac_to_ha` only marks a state "confirmed"
+    on a successful HA call, so a failed push (HA temporarily down) gets
+    retried on the next telemetry cycle rather than silently drifting out
+    of sync.
+  - **Trade-off, called out in `docs/automation-logic.md`**: the AC loses
+    the firmware's offline emergency-temperature floor, since that floor
+    can only drive a physical relay. This is inherent to the AC being an
+    HA-only device, not something this change could route around -
+    documented rather than silently accepted.
 
 ## Frontend
 
