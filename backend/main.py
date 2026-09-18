@@ -36,6 +36,12 @@ ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 
+# Purely descriptive - identifies what's actually in the tent for the
+# dashboard header. Not consulted by any control logic; change it freely
+# per grow without touching code.
+GROW_PROFILE_NAME = os.getenv("GROW_PROFILE_NAME", "Custom grow profile")
+TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
+
 connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
@@ -166,6 +172,15 @@ def get_status():
             latest_reading=app_state.latest_reading,
             offline=offline,
         )
+
+
+@app.get("/api/profile")
+def get_profile():
+    """Purely descriptive metadata for the dashboard header - what's
+    actually in the tent right now. Sourced from env vars, not the
+    decision engine's thresholds, so it's safe to change per grow without
+    touching any control logic."""
+    return {"profile_name": GROW_PROFILE_NAME, "tent_size_m2": TENT_SIZE_M2 or None}
 
 
 @app.get("/api/history")

@@ -108,6 +108,16 @@ of silently decided.
   background/border color wash across every panel, rather than just the
   toggle switch changing state, per the brief's requirement that it be
   "visually unmistakable."
+- **Dashboard header is data, not a hardcoded string**: the header
+  subtitle (what's growing / tent size) is served by a new `GET
+  /api/profile` endpoint backed by `GROW_PROFILE_NAME` / `TENT_SIZE_M2` env
+  vars, fetched once on page load. Added after the system was
+  generalized away from a single hardcoded plant/tent description —
+  keeping it server-side (rather than a client-only constant) means one
+  `.env` edit updates the label without touching or redeploying the
+  static file, and it's fetched separately from `/api/status` since it's
+  static for the life of the process and doesn't need to be re-fetched
+  every 5s poll.
 
 ## Docker / infra
 
