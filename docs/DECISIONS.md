@@ -207,6 +207,30 @@ of silently decided.
   schedule boundary the instant it's crossed - showing a "pending" state
   until the ESP32's next poll actually applies it - rather than lagging by
   up to one telemetry cycle.
+- **`light_state` is a dedicated column, not just JSON**: light on/off was
+  already captured inside `reported_relay_state`'s JSON blob on every
+  row, but pulled it out to its own top-level `ReadingRow.light_state`
+  column (and into `/api/history`'s response and the Excel export)
+  so it's directly queryable/filterable/chartable without parsing JSON -
+  the same reasoning `temp_c`/`humidity`/`soil_moisture` are columns
+  rather than a bundled JSON blob. Populated from the ESP32's *reported*
+  state (physical truth) rather than the commanded one, consistent with
+  how "reported" is treated as ground truth everywhere else (e.g. the
+  AC's HA-confirmed state in `/api/status`).
+  - **Migration note**: `SQLModel.metadata.create_all()` (run on
+    startup) only creates tables that don't exist yet - it does not add
+    columns to an existing table. Anyone with a `data/grow.db` from
+    before this change will get a `500` on the next `/api/telemetry`
+    POST (`no such column: readings.light_state`) until they run:
+    `ALTER TABLE readings ADD COLUMN light_state BOOLEAN DEFAULT 0;`
+    against it (via `sqlite3 data/grow.db` or Python's `sqlite3` module).
+    Existing rows backfill to `0`/false, which is honest - the light's
+    real historical state for readings taken before this feature existed
+    isn't recoverable from data that was never captured. Chose an
+    in-place `ALTER TABLE` over a fresh database because deleting
+    `data/grow.db` would lose all historical readings, not just the new
+    column - too large a cost for a one-column addition when the fix is
+    one SQL statement.
 
 ## Frontend
 
