@@ -131,6 +131,27 @@ of silently decided.
     can only drive a physical relay. This is inherent to the AC being an
     HA-only device, not something this change could route around -
     documented rather than silently accepted.
+- **HA reachability is a background poll, not an inline check**: `GET
+  /api/status` is polled every 5s by the dashboard, and `/api/telemetry`
+  has the ESP32 waiting on its response with a firmware-side timeout of
+  its own - neither can afford to block on a live call to Home Assistant.
+  Added a scheduler job (`_check_ha_connection`, default every 30s) that
+  calls `ha_client.check_connection()` (`GET {HA_URL}/api/`, HA's own
+  base health endpoint - works without any entity configured) and caches
+  `reachable`/`checked_at` on `AppState`; both read endpoints just return
+  the cached value. Trade-off: the indicator can lag reality by up to the
+  poll interval - accepted since immediate accuracy would mean either
+  blocking a request on HA's response time or making a second HA call to
+  the wrong latency budget entirely; a 30s-stale "unreachable" badge is a
+  fine cost for never stalling the dashboard or the ESP32.
+- **`GET /api/`, not a call against `HA_AC_ENTITY`**: the health check
+  hits Home Assistant's own root API endpoint rather than trying to read
+  the configured AC entity's state. This means "Home Assistant reachable"
+  is checked independently of whether AC-specific entities are even
+  configured yet, and doesn't touch `HA_AC_ENTITY` should it be wrong -
+  the two concerns (is HA up vs. is the AC entity ID correct) stay
+  separate, matching how the request explicitly asked for a connectivity
+  indicator, not an AC-entity health check.
 
 ## Light schedule
 
@@ -228,6 +249,33 @@ of silently decided.
   segmented control needs its own scoped rule for the same reason - the
   shared `.segmented`/`.segmented-thumb` base styling is fine to reuse,
   the position/color override per state is not.
+- **AC moved out of the relay grid into its own "home assistant" panel**:
+  previously AC sat alongside fan/pump as a third tile in the `.relays`
+  grid, which implied it's the same kind of thing - a local ESP32 relay.
+  It isn't: AC has no physical relay and depends entirely on Home
+  Assistant being reachable (see "AC: no physical relay" above), so it
+  now gets a visually separate panel, distinguishing it the same way the
+  light panel is separated (its own section, its own explanatory caption)
+  rather than blending into a grid of otherwise-identical tiles.
+  `.relays` dropped from 3 columns to 2 (fan, pump) accordingly, and the
+  AC/light "single control + pending indicator" row markup was
+  generalized from light-specific classes (`.light-btn`, `.light-row`,
+  ...) to shared ones (`.control-btn`, `.control-row`, ...) since both
+  panels now need the identical layout - kept the light-specific
+  behavior (schedule gating) in JS, not duplicated in CSS.
+- **AC's "on" accent is teal, not the green/amber used elsewhere**: every
+  other "on" state (fan, pump, light) uses green or amber, so AC needed
+  its own color to read as visually distinct at a glance - reusing teal
+  (already in the palette for the humidity readout) both avoids
+  introducing a new color and loosely signals "this is the
+  cooler/external one," consistent with a Home Assistant-mediated
+  control rather than a direct relay.
+- **HA connection badge reuses the same status-badge component as the
+  backend connection indicator**: generalized `#conn-badge`'s CSS from an
+  ID-scoped rule to a `.status-badge` class so the new HA badge could
+  reuse it exactly (`ok`/`stale`/`unreachable`, plus a new `unknown`
+  state for "not checked yet") rather than duplicating pill/dot/pulse
+  styling a second time for what is visually the same kind of indicator.
 
 ## Docker / infra
 

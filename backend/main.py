@@ -16,6 +16,7 @@ from decision_engine import decide_relay_state
 from excel_export import export_readings_to_excel
 from light_schedule import is_light_on
 from models import (
+    HaStatus,
     LightManualIn,
     LightScheduleIn,
     LightStatus,
@@ -84,6 +85,11 @@ class AppState:
         self.light_on_hours: int = LIGHT_DEFAULT_ON_HOURS
         self.light_commanded: bool = False
         self.light_reported: Optional[bool] = None
+        # Home Assistant reachability, refreshed on its own schedule (see
+        # scheduler._check_ha_connection) rather than per-request. None
+        # until the first check completes.
+        self.ha_reachable: Optional[bool] = None
+        self.ha_last_checked: Optional[datetime] = None
 
 
 app_state = AppState()
@@ -259,6 +265,7 @@ def get_status():
             latest_reading=app_state.latest_reading,
             offline=offline,
             light=_light_status(now),
+            ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
         )
 
 

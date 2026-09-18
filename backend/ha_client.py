@@ -51,6 +51,23 @@ def _call_service(domain: str, service: str, payload: dict) -> bool:
         return False
 
 
+def check_connection() -> bool:
+    """Hits Home Assistant's own base API endpoint (GET /api/, returns
+    {"message": "API running."} on success) to check it's actually
+    reachable and the token is valid - not tied to any specific entity or
+    domain, so it works even before HA_AC_ENTITY/HA_SWITCH_ENTITY are
+    configured. Called on a schedule (see scheduler.py), never from a
+    request path, so a slow/hanging HA never adds latency to anything a
+    user is waiting on."""
+    try:
+        resp = httpx.get(f"{HA_URL}/api/", headers=_headers, timeout=HA_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Home Assistant connection check failed: %s", exc)
+        return False
+
+
 def toggle_switch(entity_id: str, on: bool) -> bool:
     service = "turn_on" if on else "turn_off"
     return _call_service("switch", service, {"entity_id": entity_id})

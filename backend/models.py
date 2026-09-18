@@ -64,6 +64,15 @@ class LightStatus(BaseModel):
     reported: Optional[bool] = None
 
 
+class HaStatus(BaseModel):
+    # None = not checked yet (e.g. right after backend startup, before the
+    # first scheduled health check completes) - distinct from a known-bad
+    # False, so the dashboard can show "checking..." rather than a false
+    # "unreachable".
+    reachable: Optional[bool] = None
+    checked_at: Optional[datetime] = None
+
+
 class StatusOut(BaseModel):
     mode: Literal["auto", "manual"]
     commanded_relay_state: RelayState
@@ -72,6 +81,7 @@ class StatusOut(BaseModel):
     latest_reading: Optional[SensorReading]
     offline: bool
     light: LightStatus
+    ha: HaStatus
 
 
 # --- persistence --------------------------------------------------------------------

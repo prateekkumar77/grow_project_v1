@@ -83,6 +83,17 @@ other relays have: if the network or Home Assistant is down, the AC just
 stays wherever it last was, with no local device watching temperature for
 it. See the note on `EMERGENCY_TEMP_C` below.
 
+Because AC control depends entirely on Home Assistant being reachable,
+the dashboard gives it its own panel, separate from the ESP32 relay tiles,
+with a live "is Home Assistant actually reachable right now" indicator.
+The backend checks this independently of any AC command - a background
+job (`scheduler._check_ha_connection`, every `HA_HEALTH_CHECK_INTERVAL_SECONDS`,
+default 30s) calls `ha_client.check_connection()` (`GET {HA_URL}/api/`,
+Home Assistant's own health-check endpoint) and caches the result. `GET
+/api/status` just reports that cached value instantly - the check never
+runs on a request path, so a slow or hanging Home Assistant can't add
+latency to a page load the way an inline check would.
+
 ## Manual mode
 
 When the dashboard puts the system in **manual**, the decision engine is

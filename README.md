@@ -203,3 +203,11 @@ One consequence: the firmware's offline emergency-temperature floor
 protects the AC specifically if it has no relay — only the fan still has
 that offline backstop. See `docs/automation-logic.md` and
 `docs/DECISIONS.md` for the full reasoning.
+
+Because of that dependency, the dashboard puts AC control in its own
+"home assistant" panel, separate from the ESP32 relay tiles, with a live
+badge showing whether Home Assistant is actually reachable right now.
+That check runs on its own background schedule
+(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) against Home Assistant's
+own `GET /api/` health endpoint — never inline with a request — so a
+slow or hanging Home Assistant can't add latency to a dashboard load.

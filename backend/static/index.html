@@ -92,7 +92,7 @@
     letter-spacing: 0;
   }
 
-  #conn-badge {
+  .status-badge {
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -107,7 +107,7 @@
     transition: border-color 0.3s var(--ease), color 0.3s var(--ease);
   }
 
-  #conn-badge .dot {
+  .status-badge .dot {
     width: 7px;
     height: 7px;
     border-radius: 50%;
@@ -115,21 +115,24 @@
     flex-shrink: 0;
   }
 
-  #conn-badge[data-state="ok"] { color: var(--ok); border-color: rgba(127, 176, 105, 0.35); }
-  #conn-badge[data-state="ok"] .dot {
+  .status-badge[data-state="ok"] { color: var(--ok); border-color: rgba(127, 176, 105, 0.35); }
+  .status-badge[data-state="ok"] .dot {
     background: var(--ok);
     box-shadow: 0 0 0 0 var(--ok-glow);
     animation: pulse-ok 2s infinite;
   }
 
-  #conn-badge[data-state="stale"] { color: var(--warn); border-color: rgba(224, 164, 88, 0.35); }
-  #conn-badge[data-state="stale"] .dot { background: var(--warn); }
+  .status-badge[data-state="stale"] { color: var(--warn); border-color: rgba(224, 164, 88, 0.35); }
+  .status-badge[data-state="stale"] .dot { background: var(--warn); }
 
-  #conn-badge[data-state="unreachable"] { color: var(--danger); border-color: rgba(209, 106, 90, 0.35); }
-  #conn-badge[data-state="unreachable"] .dot {
+  .status-badge[data-state="unreachable"] { color: var(--danger); border-color: rgba(209, 106, 90, 0.35); }
+  .status-badge[data-state="unreachable"] .dot {
     background: var(--danger);
     animation: pulse-danger 1.1s infinite;
   }
+
+  .status-badge[data-state="unknown"] { color: var(--text-faint); border-color: var(--border); }
+  .status-badge[data-state="unknown"] .dot { background: var(--text-faint); }
 
   @keyframes pulse-ok {
     0% { box-shadow: 0 0 0 0 var(--ok-glow); }
@@ -375,7 +378,7 @@
 
   .relays {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 14px;
   }
 
@@ -454,7 +457,9 @@
   .relay.pending .pending { display: flex; }
   .relay.pending { border-color: rgba(224, 164, 88, 0.45); }
 
-  .light-row {
+  /* Generic "single control with a pending state" row, shared by the
+     light panel and the Home Assistant/AC panel. */
+  .control-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -462,13 +467,13 @@
     gap: 14px;
   }
 
-  .light-status {
+  .control-status {
     display: flex;
     align-items: center;
     gap: 12px;
   }
 
-  .light-btn {
+  .control-btn {
     font-family: var(--font-mono);
     font-size: 13px;
     font-weight: 500;
@@ -481,22 +486,32 @@
     transition: all 0.25s var(--ease);
   }
 
-  .light-btn.on {
+  .control-btn.on {
     color: #fbe9c4;
     border-color: var(--amber);
     background: linear-gradient(135deg, rgba(226, 149, 79, 0.3), rgba(226, 149, 79, 0.1));
     box-shadow: 0 0 16px -4px rgba(226, 149, 79, 0.4);
   }
 
-  .light-btn.manual-active {
+  /* AC's "on" accent is teal (Home Assistant / external integration)
+     rather than amber (used for the light, a direct local relay) - a
+     deliberate visual cue that this control takes a different path. */
+  .control-btn.on.ac {
+    color: #d7f0ec;
+    border-color: var(--teal);
+    background: linear-gradient(135deg, rgba(107, 180, 168, 0.3), rgba(107, 180, 168, 0.1));
+    box-shadow: 0 0 16px -4px rgba(107, 180, 168, 0.4);
+  }
+
+  .control-btn.enabled {
     cursor: pointer;
     color: var(--text);
   }
 
-  .light-btn.manual-active:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-  .light-btn.manual-active:active { transform: translateY(0); }
+  .control-btn.enabled:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .control-btn.enabled:active { transform: translateY(0); }
 
-  .light-pending {
+  .control-pending {
     display: none;
     align-items: center;
     gap: 5px;
@@ -505,9 +520,9 @@
     font-family: var(--font-mono);
   }
 
-  .light-pending.show { display: flex; }
+  .control-pending.show { display: flex; }
 
-  .light-pending .blip {
+  .control-pending .blip {
     width: 5px;
     height: 5px;
     border-radius: 50%;
@@ -545,8 +560,8 @@
   }
 
   @media (max-width: 480px) {
-    .grid-3, .relays { grid-template-columns: 1fr 1fr; }
-    .grid-3 > :last-child, .relays > :last-child { grid-column: 1 / -1; }
+    .grid-3 { grid-template-columns: 1fr 1fr; }
+    .grid-3 > :last-child { grid-column: 1 / -1; }
   }
 </style>
 </head>
@@ -558,7 +573,7 @@
 
   <header>
     <h1>Grow tent control<span class="sub" id="profile-label"></span></h1>
-    <span id="conn-badge" data-state="unreachable"><span class="dot"></span><span class="text">connecting&hellip;</span></span>
+    <span id="conn-badge" class="status-badge" data-state="unreachable"><span class="dot"></span><span class="text">connecting&hellip;</span></span>
   </header>
 
   <div id="banner-unreachable" class="banner">
@@ -623,11 +638,6 @@
           <button>off</button>
           <div class="pending"><span class="blip"></span>pending&hellip;</div>
         </div>
-        <div class="relay" id="relay-ac" data-relay="ac">
-          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M4.5 6.5l15 11M19.5 6.5l-15 11"/></svg>ac</div>
-          <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
-        </div>
         <div class="relay" id="relay-pump" data-relay="pump">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
           <button>off</button>
@@ -644,10 +654,10 @@
       <span class="meta" style="margin-left: auto; font-weight: 400;">not affected by auto mode</span>
     </div>
 
-    <div class="light-row">
-      <div class="light-status">
-        <button class="light-btn" id="light-manual-btn">off</button>
-        <div class="light-pending" id="light-pending"><span class="blip"></span>pending&hellip;</div>
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn" id="light-manual-btn">off</button>
+        <div class="control-pending" id="light-pending"><span class="blip"></span>pending&hellip;</div>
       </div>
 
       <div class="segmented" id="light-toggle" data-mode="manual">
@@ -666,13 +676,29 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10a6 6 0 0 1 12 0v1a4 4 0 0 1-1 7.9M6 10a4 4 0 0 0-1 7.9M6 10v1a4 4 0 0 0 1 7.9m6-16.8V4m0 3v13"/></svg>
+      home assistant
+      <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn ac" id="ac-btn">off</button>
+        <div class="control-pending" id="ac-pending"><span class="blip"></span>pending&hellip;</div>
+      </div>
+      <span class="meta">ac &middot; via Home Assistant, not a local relay</span>
+    </div>
+  </div>
+
   <footer>polling /api/status every 5s</footer>
 </div>
 
 <script>
 (function () {
   var POLL_MS = 5000;
-  var relays = ["fan", "ac", "pump"];
+  var relays = ["fan", "pump"];
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
   var lastValues = { temp: null, humidity: null, soil: null };
@@ -695,8 +721,8 @@
     }
   }
 
-  function setConnBadge(state, text) {
-    var el = document.getElementById("conn-badge");
+  function setBadge(elId, state, text) {
+    var el = document.getElementById(elId);
     el.dataset.state = state;
     el.querySelector(".text").textContent = text;
   }
@@ -735,9 +761,30 @@
 
     showBanner("banner-stale", !!status.offline);
     showBanner("banner-unreachable", false);
-    setConnBadge(status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
+    setBadge("conn-badge", status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
 
     applyLightStatus(status.light);
+    applyAcAndHaStatus(status);
+  }
+
+  function applyAcAndHaStatus(status) {
+    var ha = status.ha || {};
+    var haState = ha.reachable === true ? "ok" : ha.reachable === false ? "unreachable" : "unknown";
+    var haText = haState === "ok" ? "connected" : haState === "unreachable" ? "unreachable" : "checking…";
+    setBadge("ha-badge", haState, haText);
+
+    var manual = status.mode === "manual";
+    var btn = document.getElementById("ac-btn");
+    var commanded = status.commanded_relay_state ? status.commanded_relay_state.ac : false;
+    var reported = status.reported_relay_state ? status.reported_relay_state.ac : commanded;
+
+    btn.textContent = reported ? "on" : "off";
+    btn.classList.toggle("on", !!reported);
+    btn.classList.toggle("enabled", manual);
+    btn.disabled = !manual;
+
+    var pending = status.reported_relay_state != null && commanded !== reported;
+    document.getElementById("ac-pending").classList.toggle("show", pending);
   }
 
   function applyLightStatus(light) {
@@ -752,7 +799,7 @@
     var reported = light.reported != null ? light.reported : light.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("manual-active", !light.schedule_enabled);
+    btn.classList.toggle("enabled", !light.schedule_enabled);
     btn.disabled = light.schedule_enabled;
 
     var pending = light.reported != null && light.commanded !== light.reported;
@@ -790,7 +837,8 @@
       })
       .then(applyStatus)
       .catch(function () {
-        setConnBadge("unreachable", "unreachable");
+        setBadge("conn-badge", "unreachable", "unreachable");
+        setBadge("ha-badge", "unknown", "unknown");
         showBanner("banner-unreachable", true);
         showBanner("banner-stale", false);
       });
@@ -824,6 +872,16 @@
         body: JSON.stringify({ relay: name, state: turningOn }),
       }).then(poll);
     });
+  });
+
+  document.getElementById("ac-btn").addEventListener("click", function (e) {
+    if (currentMode !== "manual") return;
+    var turningOn = !e.currentTarget.classList.contains("on");
+    fetch("/api/relay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relay: "ac", state: turningOn }),
+    }).then(poll);
   });
 
   (function populateLightHourOptions() {
