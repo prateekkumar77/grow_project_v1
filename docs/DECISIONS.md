@@ -304,6 +304,19 @@ of silently decided.
   where you looked. Labeled explicitly ("UTC day" / "UTC week") in the
   UI so this isn't a silent surprise.
 
+## Database export
+
+- **`POST /api/export` returns the generated `.xlsx` file directly**
+  (with a `Content-Disposition: attachment` header), rather than writing
+  it to disk and responding with just a row count. The endpoint already
+  regenerates the file from scratch on every call (see
+  `backend/excel_export.py`'s own docstring), so returning it inline lets
+  the dashboard's "download .xlsx" button trigger a real browser download
+  with one `fetch` + blob, with no separate "now go fetch the file"
+  step or static route needed. The file is still also written to
+  `EXPORT_PATH` on disk as before, so the scheduled background export
+  (`_run_export`) and manual/API triggers behave identically either way.
+
 ## Frontend
 
 - **No external font/CDN dependency**: used the system monospace/sans font

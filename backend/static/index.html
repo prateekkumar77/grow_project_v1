@@ -518,6 +518,9 @@
   .control-btn.enabled:hover { border-color: var(--border-strong); transform: translateY(-1px); }
   .control-btn.enabled:active { transform: translateY(0); }
 
+  .control-btn.export:hover { border-color: var(--moss); color: #eaf1de; }
+  .control-btn.export:disabled { cursor: wait; opacity: 0.6; transform: none; }
+
   .control-pending {
     display: none;
     align-items: center;
@@ -859,6 +862,20 @@
       light schedule
     </div>
     <div id="light-pie-container" class="pie-row"></div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+      export data
+    </div>
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn enabled export" id="export-btn">download .xlsx</button>
+        <div class="control-pending" id="export-pending"><span class="blip"></span>exporting&hellip;</div>
+      </div>
+      <span class="meta" id="export-meta">every logged reading, from the start of this database</span>
+    </div>
   </div>
 
   </div>
@@ -1380,6 +1397,38 @@
 
   document.getElementById("day-picker").value = todayUtcDateString();
   document.getElementById("week-picker").value = currentIsoWeekString();
+
+  document.getElementById("export-btn").addEventListener("click", function () {
+    var btn = document.getElementById("export-btn");
+    var pending = document.getElementById("export-pending");
+    var meta = document.getElementById("export-meta");
+    btn.disabled = true;
+    pending.style.display = "flex";
+
+    fetch("/api/export", { method: "POST" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("export failed (" + res.status + ")");
+        return res.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "readings_export.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        meta.textContent = "downloaded at " + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        meta.textContent = err.message || "export failed";
+      })
+      .finally(function () {
+        btn.disabled = false;
+        pending.style.display = "none";
+      });
+  });
 
   loadProfile();
   poll();
