@@ -232,6 +232,78 @@ of silently decided.
     column - too large a cost for a one-column addition when the fix is
     one SQL statement.
 
+## History charts
+
+- **Aggregation happens server-side, in Python, not in SQL or client-side**:
+  `backend/chart_data.py`'s `bucket_by_step()` fetches raw rows for the
+  requested window and averages them in Python, rather than a SQL
+  `GROUP BY` (which would need SQLite-version-specific date-bucketing
+  functions and be harder to unit test) or shipping raw rows to the
+  browser to average in JS (a day is ~4,300 rows, a week ~30,000, at the
+  default telemetry interval - unnecessary payload and client CPU for
+  what's fundamentally a small aggregation). A single pure function
+  serves both the day view (24h window) and the week view (7-day window,
+  6h buckets) by parameterizing the window/step size, rather than two
+  separate implementations.
+- **A missing bucket is `null`, never `0` or interpolated**: if the ESP32
+  was offline for a stretch, that bucket has no readings to average.
+  Rendering it as `0` would fabricate a reading that never happened (a
+  dropped connection showing as "0°C" is actively misleading); the chart
+  renders it as a genuine gap in the line instead - same "don't fabricate
+  missing data" principle already used for `reported_relay_state` vs.
+  ESP32-unreachable states elsewhere in the app.
+- **Week view is 4 points/day (6h buckets), not one average per day**:
+  the first pass averaged a full day into a single point, which flattens
+  away the entire intraday temperature/humidity swing - a week of
+  identical-looking daily averages tells you almost nothing about what
+  actually happened. Switched to `bucket_by_step()` with a 6-hour step
+  over the 7-day window (the same function the day view uses, just a
+  different window/step), which keeps the day-to-day repeating pattern
+  visible while still being far coarser than the day view's 30/60min
+  buckets - 28 points for a week is still a compact response, not the
+  ~1,000-row cap `/api/history` would need for the same range.
+- **Dual y-axis (temperature left, humidity+soil right)**: the brief asks
+  for one chart with all three series. Overlaying three series with
+  incompatible units (°C vs. two independent 0-100% metrics) on a single
+  axis would be actively misleading (e.g. a 5-point humidity move and a
+  5-degree temperature move would look identical in size, despite
+  meaning very different things). A dual axis is defensible here
+  specifically because humidity and soil moisture already share a unit
+  (%) and can honestly share the right axis - this isn't three arbitrary
+  metrics forced onto two axes, it's one metric with its own unit (left)
+  and two metrics that are already the same unit (right).
+- **Dynamic tick-label decimal precision**: initial version always
+  rounded axis labels to whole numbers, which looked broken (four
+  gridlines all reading "24") whenever the auto-scaled range was narrow
+  - a real scenario for a climate-controlled tent's weekly temperature
+  average, not just a synthetic-data artifact. Fixed by using 1 decimal
+  place whenever the axis span is under 5 units, since the live
+  dashboard's own readouts already show temp/humidity/soil to 1 decimal,
+  so this doesn't introduce a new precision convention.
+- **Hand-rolled inline SVG, no charting library**: consistent with the
+  rest of the dashboard's no-external-dependency stance (see "No external
+  font/CDN dependency" below) - a charting library via CDN would be the
+  easy path, but would make the dashboard depend on internet access for
+  something that's otherwise fully self-hosted on the local network.
+  Hover detail is provided via native SVG `<title>` tooltips on each data
+  point rather than a custom-built tooltip system, which needs no extra
+  JS event wiring and degrades gracefully (still a functional data point,
+  just no popup) anywhere `<title>` isn't rendered.
+- **Date/week pickers are native `<input type="date">`/`<input
+  type="week">`**, not a custom-built calendar widget. `type="week"` in
+  particular has inconsistent browser support (notably Firefox desktop
+  falls back to a plain text input rather than a calendar UI) - accepted
+  as a reasonable trade-off given a custom week-picker would be
+  significant extra code for what's a secondary control, and the text
+  fallback is still fully functional if typed in `YYYY-Www` format.
+- **All chart date/week inputs are UTC, not the browser's local
+  timezone**: consistent with the light schedule's own UTC-midnight
+  anchor and the rest of the backend's `datetime.utcnow()`-only design -
+  introducing local-time handling in just the charts would mean the same
+  calendar date could mean two different underlying windows depending on
+  where you looked. Labeled explicitly ("UTC day" / "UTC week") in the
+  UI so this isn't a silent surprise.
+
 ## Frontend
 
 - **No external font/CDN dependency**: used the system monospace/sans font
