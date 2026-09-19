@@ -353,6 +353,13 @@
     border-color: var(--teal);
   }
 
+  /* step-toggle: 1h | 30m - thumb shifts right for 30m (2nd button) */
+  #step-toggle[data-mode="30"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(147, 172, 92, 0.55), rgba(147, 172, 92, 0.3));
+    border-color: var(--moss);
+  }
+
   .segmented button {
     position: relative;
     z-index: 1;
@@ -550,6 +557,120 @@
 
   .light-schedule-controls select:focus { outline: 1px solid var(--border-strong); }
 
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tab-btn {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 9px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transform: translateY(1px);
+    transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+  }
+
+  .tab-btn:hover { color: var(--text); }
+
+  .tab-btn.active {
+    color: var(--text);
+    border-bottom-color: var(--amber);
+  }
+
+  .chart-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .chart-input {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    color-scheme: dark;
+  }
+
+  .chart-input:focus { outline: 1px solid var(--border-strong); }
+
+  .chart-container {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .chart-container svg { display: block; width: 100%; height: auto; }
+
+  .chart-empty {
+    padding: 40px 0;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
+    font-family: var(--font-mono);
+  }
+
+  .chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 10px;
+    justify-content: center;
+  }
+
+  .chart-legend .item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .chart-legend .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+
+  .pie-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .pie-caption {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pie-caption .row-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pie-caption .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
   footer {
     margin-top: 28px;
     font-family: var(--font-mono);
@@ -588,6 +709,13 @@
       <span>sensor offline &mdash; the backend is up, but the ESP32 has not reported in a while. Showing last known readings.</span>
     </div></div>
   </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" id="tab-btn-live" data-tab="live">live</button>
+    <button class="tab-btn" id="tab-btn-history" data-tab="history">history</button>
+  </div>
+
+  <div id="tab-live" class="tab-panel">
 
   <div class="panel">
     <div class="grid-3">
@@ -692,6 +820,49 @@
     </div>
   </div>
 
+  </div>
+
+  <div id="tab-history" class="tab-panel" style="display:none">
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 3 4 5-8"/></svg>
+      daily readings
+      <span class="meta" style="margin-left: auto; font-weight: 400;">UTC day</span>
+    </div>
+    <div class="chart-controls">
+      <input type="date" id="day-picker" class="chart-input">
+      <div class="segmented" id="step-toggle" data-mode="60">
+        <span class="segmented-thumb"></span>
+        <button id="step-btn-60" class="active">1h step</button>
+        <button id="step-btn-30">30m step</button>
+      </div>
+    </div>
+    <div id="day-chart-container" class="chart-container"></div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>
+      weekly averages
+      <span class="meta" style="margin-left: auto; font-weight: 400;">UTC week, 6h averages</span>
+    </div>
+    <div class="chart-controls">
+      <input type="week" id="week-picker" class="chart-input" placeholder="YYYY-Www">
+    </div>
+    <div id="week-chart-container" class="chart-container"></div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      light schedule
+    </div>
+    <div id="light-pie-container" class="pie-row"></div>
+  </div>
+
+  </div>
+
   <footer>polling /api/status every 5s</footer>
 </div>
 
@@ -765,6 +936,7 @@
 
     applyLightStatus(status.light);
     applyAcAndHaStatus(status);
+    renderLightPie(status.light);
   }
 
   function applyAcAndHaStatus(status) {
@@ -924,6 +1096,290 @@
   document.getElementById("light-on-hours").addEventListener("change", function () {
     postLightSchedule(currentLightScheduleEnabled);
   });
+
+  // --- history tab: charts -------------------------------------------------------------
+
+  var COLOR_TEMP = "#e2954f";
+  var COLOR_HUMIDITY = "#6bb4a8";
+  var COLOR_SOIL = "#93ac5c";
+  var COLOR_ON = "#7fb069";
+  var COLOR_OFF = "#d16a5a";
+  var COLOR_GRID = "rgba(196, 154, 108, 0.14)";
+  var COLOR_AXIS_TEXT = "#7c705a";
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS(SVG_NS, tag);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function renderDualAxisChart(container, points, xLabels) {
+    container.innerHTML = "";
+    var hasData = points.some(function (p) { return p.temp_c != null; });
+    if (!hasData) {
+      var empty = document.createElement("div");
+      empty.className = "chart-empty";
+      empty.textContent = "no readings in this range";
+      container.appendChild(empty);
+      return;
+    }
+
+    var width = 720, height = 280;
+    var padL = 40, padR = 40, padT = 18, padB = 30;
+    var plotW = width - padL - padR;
+    var plotH = height - padT - padB;
+
+    var temps = points.map(function (p) { return p.temp_c; }).filter(function (v) { return v != null; });
+    var tMin = Math.min.apply(null, temps);
+    var tMax = Math.max.apply(null, temps);
+    var tPad = (tMax - tMin) * 0.15 || 1;
+    var tLo = tMin - tPad, tHi = tMax + tPad;
+    var pLo = 0, pHi = 100;
+
+    function xPos(i) {
+      return padL + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
+    }
+    function yTemp(v) { return padT + (1 - (v - tLo) / (tHi - tLo)) * plotH; }
+    function yPct(v) { return padT + (1 - (v - pLo) / (pHi - pLo)) * plotH; }
+
+    var svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height });
+
+    // A narrow auto-scaled range (e.g. a climate-controlled tent's weekly
+    // averages barely moving) would otherwise round every gridline to the
+    // same integer and look broken ("24, 24, 24, 24"). Fall back to 1
+    // decimal place whenever the axis span is small enough for that to
+    // matter.
+    var tempDecimals = (tHi - tLo) < 5 ? 1 : 0;
+    var pctDecimals = (pHi - pLo) < 5 ? 1 : 0;
+
+    var gridCount = 4;
+    for (var g = 0; g <= gridCount; g++) {
+      var frac = g / gridCount;
+      var y = padT + frac * plotH;
+      svg.appendChild(svgEl("line", { x1: padL, x2: width - padR, y1: y.toFixed(1), y2: y.toFixed(1), stroke: COLOR_GRID, "stroke-width": 1 }));
+
+      var tempVal = tHi - frac * (tHi - tLo);
+      var leftLabel = svgEl("text", { x: padL - 8, y: (y + 3.5).toFixed(1), "text-anchor": "end", "font-size": 10, fill: COLOR_AXIS_TEXT });
+      leftLabel.textContent = tempVal.toFixed(tempDecimals);
+      svg.appendChild(leftLabel);
+
+      var pctVal = pHi - frac * (pHi - pLo);
+      var rightLabel = svgEl("text", { x: width - padR + 8, y: (y + 3.5).toFixed(1), "text-anchor": "start", "font-size": 10, fill: COLOR_AXIS_TEXT });
+      rightLabel.textContent = pctVal.toFixed(pctDecimals);
+      svg.appendChild(rightLabel);
+    }
+
+    var leftUnit = svgEl("text", { x: 2, y: 12, "font-size": 10, fill: COLOR_TEMP });
+    leftUnit.textContent = "°c";
+    svg.appendChild(leftUnit);
+    var rightUnit = svgEl("text", { x: width - 14, y: 12, "font-size": 10, fill: COLOR_AXIS_TEXT });
+    rightUnit.textContent = "%";
+    svg.appendChild(rightUnit);
+
+    function addSeries(key, yFn, color) {
+      var d = "", started = false;
+      points.forEach(function (p, i) {
+        var v = p[key];
+        if (v == null) { started = false; return; }
+        var x = xPos(i), y = yFn(v);
+        d += (started ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1) + " ";
+        started = true;
+      });
+      if (d.trim()) {
+        svg.appendChild(svgEl("path", { d: d.trim(), fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      }
+      points.forEach(function (p, i) {
+        var v = p[key];
+        if (v == null) return;
+        var x = xPos(i), y = yFn(v);
+        var dot = svgEl("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 2.5, fill: color });
+        var title = svgEl("title", {});
+        title.textContent = xLabels[i] + ": " + v.toFixed(1);
+        dot.appendChild(title);
+        svg.appendChild(dot);
+      });
+    }
+
+    addSeries("temp_c", yTemp, COLOR_TEMP);
+    addSeries("humidity", yPct, COLOR_HUMIDITY);
+    addSeries("soil_moisture", yPct, COLOR_SOIL);
+
+    var maxLabels = 8;
+    var stride = Math.max(1, Math.ceil(points.length / maxLabels));
+    xLabels.forEach(function (label, i) {
+      if (i % stride !== 0 && i !== xLabels.length - 1) return;
+      var x = xPos(i);
+      var text = svgEl("text", { x: x.toFixed(1), y: height - padB + 16, "text-anchor": "middle", "font-size": 10, fill: COLOR_AXIS_TEXT });
+      text.textContent = label;
+      svg.appendChild(text);
+    });
+
+    container.appendChild(svg);
+
+    var legend = document.createElement("div");
+    legend.className = "chart-legend";
+    [["temperature", COLOR_TEMP], ["humidity", COLOR_HUMIDITY], ["soil moisture", COLOR_SOIL]].forEach(function (pair) {
+      var item = document.createElement("div");
+      item.className = "item";
+      var swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.style.background = pair[1];
+      var label = document.createElement("span");
+      label.textContent = pair[0];
+      item.appendChild(swatch);
+      item.appendChild(label);
+      legend.appendChild(item);
+    });
+    container.appendChild(legend);
+  }
+
+  function todayUtcDateString() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function loadDayChart() {
+    var date = document.getElementById("day-picker").value || todayUtcDateString();
+    var step = document.getElementById("step-toggle").dataset.mode;
+    fetch("/api/charts/day?date=" + encodeURIComponent(date) + "&step_minutes=" + step)
+      .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
+      .then(function (data) {
+        var points = data.map(function (d) { return { temp_c: d.temp_c, humidity: d.humidity, soil_moisture: d.soil_moisture }; });
+        var labels = data.map(function (d) { return d.timestamp.slice(11, 16); });
+        renderDualAxisChart(document.getElementById("day-chart-container"), points, labels);
+      })
+      .catch(function () {
+        document.getElementById("day-chart-container").innerHTML = '<div class="chart-empty">could not load chart data</div>';
+      });
+  }
+
+  function isoWeekToMonday(isoWeekStr) {
+    var parts = isoWeekStr.split("-W");
+    var year = parseInt(parts[0], 10), week = parseInt(parts[1], 10);
+    var jan4 = new Date(Date.UTC(year, 0, 4));
+    var jan4Day = jan4.getUTCDay() || 7;
+    var week1Monday = new Date(jan4);
+    week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1);
+    var monday = new Date(week1Monday);
+    monday.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+    return monday.toISOString().slice(0, 10);
+  }
+
+  function currentIsoWeekString() {
+    var now = new Date();
+    var d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    var dayNum = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+    var yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    var weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    return d.getUTCFullYear() + "-W" + String(weekNo).padStart(2, "0");
+  }
+
+  var WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function loadWeekChart() {
+    var weekVal = document.getElementById("week-picker").value || currentIsoWeekString();
+    var weekStart = /^\d{4}-W\d{2}$/.test(weekVal) ? isoWeekToMonday(weekVal) : weekVal;
+    fetch("/api/charts/week?week_start=" + encodeURIComponent(weekStart))
+      .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
+      .then(function (data) {
+        var points = data.map(function (d) { return { temp_c: d.temp_c, humidity: d.humidity, soil_moisture: d.soil_moisture }; });
+        var labels = data.map(function (d) {
+          var dt = new Date(d.timestamp + "Z");
+          var hhmm = d.timestamp.slice(11, 16);
+          return WEEKDAY_NAMES[dt.getUTCDay()] + " " + hhmm;
+        });
+        renderDualAxisChart(document.getElementById("week-chart-container"), points, labels);
+      })
+      .catch(function () {
+        document.getElementById("week-chart-container").innerHTML = '<div class="chart-empty">could not load chart data</div>';
+      });
+  }
+
+  function polarPoint(cx, cy, r, angleDeg) {
+    var rad = (angleDeg - 90) * Math.PI / 180;
+    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+  }
+
+  function pieWedgePath(cx, cy, r, startAngle, endAngle) {
+    var p1 = polarPoint(cx, cy, r, startAngle);
+    var p2 = polarPoint(cx, cy, r, endAngle);
+    var largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
+    return "M " + cx + "," + cy + " L " + p1[0].toFixed(2) + "," + p1[1].toFixed(2) +
+      " A " + r + "," + r + " 0 " + largeArc + " 1 " + p2[0].toFixed(2) + "," + p2[1].toFixed(2) + " Z";
+  }
+
+  function renderLightPie(light) {
+    var container = document.getElementById("light-pie-container");
+    if (!container || !light) return;
+    container.innerHTML = "";
+
+    var size = 140, cx = size / 2, cy = size / 2, r = size / 2 - 4;
+    var svg = svgEl("svg", { viewBox: "0 0 " + size + " " + size, width: size, height: size });
+    var caption = document.createElement("div");
+    caption.className = "pie-caption";
+
+    if (light.schedule_enabled) {
+      var onFraction = light.on_hours / 24;
+      if (onFraction >= 1) {
+        svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: COLOR_ON }));
+      } else if (onFraction <= 0) {
+        svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: COLOR_OFF }));
+      } else {
+        var onAngle = onFraction * 360;
+        svg.appendChild(svgEl("path", { d: pieWedgePath(cx, cy, r, 0, onAngle), fill: COLOR_ON }));
+        svg.appendChild(svgEl("path", { d: pieWedgePath(cx, cy, r, onAngle, 360), fill: COLOR_OFF }));
+      }
+      caption.innerHTML =
+        '<div class="row-item"><span class="swatch" style="background:' + COLOR_ON + '"></span>on for ' + light.on_hours + 'h</div>' +
+        '<div class="row-item"><span class="swatch" style="background:' + COLOR_OFF + '"></span>off for ' + light.off_hours + 'h</div>';
+    } else {
+      var manualOn = !!light.commanded;
+      var manualColor = manualOn ? COLOR_ON : COLOR_OFF;
+      svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: manualColor }));
+      caption.innerHTML =
+        '<div class="row-item"><span class="swatch" style="background:' + manualColor + '"></span>manual &middot; light is ' + (manualOn ? "on" : "off") + '</div>';
+    }
+
+    container.appendChild(svg);
+    container.appendChild(caption);
+  }
+
+  document.getElementById("tab-btn-live").addEventListener("click", function () {
+    document.getElementById("tab-btn-live").classList.add("active");
+    document.getElementById("tab-btn-history").classList.remove("active");
+    document.getElementById("tab-live").style.display = "";
+    document.getElementById("tab-history").style.display = "none";
+  });
+
+  document.getElementById("tab-btn-history").addEventListener("click", function () {
+    document.getElementById("tab-btn-history").classList.add("active");
+    document.getElementById("tab-btn-live").classList.remove("active");
+    document.getElementById("tab-history").style.display = "";
+    document.getElementById("tab-live").style.display = "none";
+    loadDayChart();
+    loadWeekChart();
+  });
+
+  document.getElementById("day-picker").addEventListener("change", loadDayChart);
+  document.getElementById("week-picker").addEventListener("change", loadWeekChart);
+
+  document.getElementById("step-btn-60").addEventListener("click", function () {
+    document.getElementById("step-toggle").dataset.mode = "60";
+    document.getElementById("step-btn-60").classList.add("active");
+    document.getElementById("step-btn-30").classList.remove("active");
+    loadDayChart();
+  });
+
+  document.getElementById("step-btn-30").addEventListener("click", function () {
+    document.getElementById("step-toggle").dataset.mode = "30";
+    document.getElementById("step-btn-30").classList.add("active");
+    document.getElementById("step-btn-60").classList.remove("active");
+    loadDayChart();
+  });
+
+  document.getElementById("day-picker").value = todayUtcDateString();
+  document.getElementById("week-picker").value = currentIsoWeekString();
 
   loadProfile();
   poll();

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import ha_client
+from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
 from excel_export import export_readings_to_excel
@@ -305,6 +306,77 @@ def get_history(
             "mode": row.mode,
         }
         for row in rows
+    ]
+
+
+def _parse_date(value: str, param_name: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{param_name} must be YYYY-MM-DD")
+
+
+@app.get("/api/charts/day")
+def get_day_chart(
+    date: str = Query(..., description="YYYY-MM-DD, interpreted as a UTC day"),
+    step_minutes: int = Query(60, description="Bucket width: 30 or 60"),
+    session: Session = Depends(get_session),
+):
+    """Averaged temp/humidity/soil-moisture in fixed-width buckets across
+    one UTC day - aggregated server-side so the browser never has to fetch
+    (and the chart never has to render) thousands of raw rows for a single
+    day's view."""
+    if step_minutes not in (30, 60):
+        raise HTTPException(status_code=400, detail="step_minutes must be 30 or 60")
+    day_start = _parse_date(date, "date")
+    day_end = day_start + timedelta(days=1)
+
+    rows = session.exec(
+        select(ReadingRow)
+        .where(ReadingRow.timestamp >= day_start, ReadingRow.timestamp < day_end)
+        .order_by(ReadingRow.timestamp)
+    ).all()
+    readings = [(r.timestamp, r.temp_c, r.humidity, r.soil_moisture) for r in rows]
+
+    buckets = bucket_by_step(readings, day_start, step_minutes)
+    return [
+        {
+            "timestamp": ts.isoformat(),
+            "temp_c": point.temp_c,
+            "humidity": point.humidity,
+            "soil_moisture": point.soil_moisture,
+        }
+        for ts, point in buckets
+    ]
+
+
+@app.get("/api/charts/week")
+def get_week_chart(
+    week_start: str = Query(..., description="YYYY-MM-DD of the first day, interpreted as UTC"),
+    session: Session = Depends(get_session),
+):
+    """4 points per UTC day (6-hour averages) for the 7 days starting at
+    week_start - a coarser cousin of the day chart's 30/60min buckets,
+    same underlying bucket_by_step()."""
+    start = _parse_date(week_start, "week_start")
+    end = start + timedelta(days=7)
+
+    rows = session.exec(
+        select(ReadingRow)
+        .where(ReadingRow.timestamp >= start, ReadingRow.timestamp < end)
+        .order_by(ReadingRow.timestamp)
+    ).all()
+    readings = [(r.timestamp, r.temp_c, r.humidity, r.soil_moisture) for r in rows]
+
+    buckets = bucket_by_step(readings, start, step_minutes=360, window_minutes=7 * 24 * 60)
+    return [
+        {
+            "timestamp": ts.isoformat(),
+            "temp_c": point.temp_c,
+            "humidity": point.humidity,
+            "soil_moisture": point.soil_moisture,
+        }
+        for ts, point in buckets
     ]
 
 
