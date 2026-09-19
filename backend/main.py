@@ -14,7 +14,7 @@ import ha_client
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
-from excel_export import export_readings_to_excel
+from excel_export import EXPORT_PATH, export_readings_to_excel
 from light_schedule import is_light_on
 from models import (
     HaStatus,
@@ -434,8 +434,12 @@ def set_light_manual(payload: LightManualIn):
 
 @app.post("/api/export")
 def trigger_export(session: Session = Depends(get_session)):
-    count = export_readings_to_excel(session)
-    return {"exported_rows": count}
+    export_readings_to_excel(session)
+    return FileResponse(
+        EXPORT_PATH,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="readings_export.xlsx",
+    )
 
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")

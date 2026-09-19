@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Arduino.h>
+
 #include "relays.h"
 #include "sensors.h"
 

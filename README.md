@@ -200,7 +200,7 @@ pio run --target upload
 | `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light) |
 | `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
 | `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
-| `POST /api/export` | Dashboard/manual | trigger an immediate Excel export |
+| `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
 
 ## Home Assistant / Google Home
 
