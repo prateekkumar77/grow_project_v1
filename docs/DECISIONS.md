@@ -6,15 +6,48 @@ of silently decided.
 
 ## Decision engine
 
-- **`decide_relay_state` signature**: the brief gives it as
-  `decide_relay_state(reading, previous_state)` with no baseline parameter,
-  but "a temperature rise of 2–3°C above the recent baseline" requires
-  history the function can't fetch itself (it must stay pure/I/O-free). The
-  `Reading` dataclass passed in therefore carries `baseline_temp_c` and
-  `baseline_humidity` fields alongside the instantaneous sensor values —
-  computed by the caller (`main.py`, as a rolling average over
-  `BASELINE_WINDOW_MINUTES`, default 30) and handed in. The function itself
-  still does no I/O.
+- **`decide_relay_state` signature**: `decide_relay_state(reading,
+  previous_state)`, where `Reading` carries only the instantaneous
+  `temp_c`/`humidity`/`soil_moisture` - no history, no baseline. The
+  function stays pure/I/O-free and every threshold it compares against is
+  a fixed grow-profile constant (see below).
+- **Temperature switched from a rolling-baseline rise to absolute
+  grow-profile thresholds**: the original design measured temperature as
+  a rise above a rolling average (`baseline_temp_c`, computed by the
+  caller from the last `BASELINE_WINDOW_MINUTES` of history) rather than
+  an absolute value - "a tent that's steadily warm isn't a rise; a sudden
+  climb is." That was replaced with plain absolute thresholds
+  (`TEMP_FAN_THRESHOLD_C`, `TEMP_AC_THRESHOLD_C`), matching how humidity
+  already worked (`HUMIDITY_HIGH_THRESHOLD`/`HUMIDITY_LOW_THRESHOLD` were
+  never baseline-relative to begin with - `baseline_humidity` was
+  computed but silently unused in `decide_relay_state`, dead from the
+  start). This removes `main.py`'s `_compute_baseline()`/
+  `BASELINE_WINDOW_MINUTES` entirely and makes every decision-engine
+  threshold plain, env-configurable, and directly comparable across the
+  whole grow profile - no more "why does temperature need history but
+  humidity doesn't" asymmetry, and no DB read on every telemetry cycle
+  just to decide relay state.
+  - **Added `TEMP_LOW_THRESHOLD_C`**: the baseline-relative design never
+    had a "too cold" case for temperature (only humidity did). Since the
+    switch to absolute values makes this trivial to add symmetrically -
+    at or below `TEMP_LOW_THRESHOLD_C`, turn AC off and fan on, mirroring
+    the low-humidity rule's exact reasoning (pull in comparatively warmer
+    room air instead of cooling a tent that's already too cold).
+  - **Kept the two-tier fan/AC ladder rather than collapsing to a single
+    high/low pair like humidity**: humidity has one high threshold (→
+    AC) and one low threshold (→ AC off + fan). Temperature keeps its
+    existing moderate/severe two-step ladder (fan alone, then AC) instead
+    of matching humidity's shape exactly, since fan-before-AC for a
+    moderate temperature rise was working, intentional behavior from the
+    original brief - the baseline-to-absolute switch is only about how
+    the threshold is computed, not about removing an escalation step
+    nothing asked to remove.
+  - **Placeholder values** (`TEMP_FAN_THRESHOLD_C=26.0`,
+    `TEMP_AC_THRESHOLD_C=28.0`, `TEMP_LOW_THRESHOLD_C=18.0`): chosen to
+    roughly match the old baseline-relative defaults assuming a ~24°C
+    ambient (baseline+2/+3 → 26/28), but these are absolute now and need
+    the same "tune against your actual tent" treatment as every other
+    grow-profile value (`SOIL_ADC_DRY`/`WET`, `EMERGENCY_TEMP_C`, etc.).
 - **Manual mode gating** happens in the caller, not inside
   `decide_relay_state`: when `mode == "manual"`, `main.py` never calls the
   function at all and just reuses the last dashboard-commanded state. This
@@ -31,6 +64,13 @@ of silently decided.
   is sufficient, and neither block turns off what the other just turned on
   within the same call (e.g. a temperature-driven "hold" doesn't undo a
   humidity-driven AC-on in the same reading).
+- **Exhaust is deliberately excluded from this function entirely**: an
+  earlier revision added exhaust as a fourth output here, escalating
+  alongside AC on the same humidity/temperature triggers. That was
+  reverted - exhaust is now driven only by its own run/interval duty-cycle
+  schedule (`exhaust_schedule.is_exhaust_on()`, see "Exhaust schedule"
+  below), the same "own schedule, never a sensor" treatment light already
+  gets. No humidity or temperature reading turns exhaust on or off.
 
 ## Pump safety (firmware)
 
@@ -47,8 +87,8 @@ of silently decided.
   (backend down, timeout, bad response) forces the pump off, not just a
   detected WiFi-layer disconnect. This is a strictly safer interpretation.
 - **Emergency temperature floor is one-way**: while offline, hitting
-  `EMERGENCY_TEMP_C` forces fan+AC on but never turns them back off once
-  temperature drops — described in the brief as "a floor, not real
+  `EMERGENCY_TEMP_C` forces fan+exhaust on but never turns them back off
+  once temperature drops — described in the brief as "a floor, not real
   control," so auto-recovery would be overstepping local logic.
 - **Relay wiring**: assumed active-low relay modules (`RELAY_ACTIVE_LOW =
   true` in `config.h`), the common case for inexpensive boards. Flip the
@@ -75,21 +115,36 @@ of silently decided.
   optional `since`/`until` timestamps, ordered newest-first. Not specified
   exactly in the brief beyond "query params for range/limit."
 - **Alert temperature is separate from the firmware's emergency floor**:
-  `ALERT_TEMP_C` (backend, default 32°C, drives the Home Assistant
-  notification) is intentionally lower than and independent of
-  `EMERGENCY_TEMP_C` (firmware, default 35°C, offline-only physical
-  cutoff) — one is an early warning while the network is up, the other is
-  a last-resort floor for when it isn't.
-- **HA alert debounce state**: kept as an in-memory dict keyed by alert
-  type, not persisted. A backend restart resetting the debounce window is
-  an acceptable cost for a home-automation notification feature.
-- **`tts.speak` payload**: the brief flags that this API's field names have
-  changed across Home Assistant versions and asks that the exact payload be
-  confirmed via Developer Tools → Actions before hardcoding it. Since that
-  requires a live HA instance this build doesn't have, `ha_client.speak()`
-  ships with the current (2024+) `media_player_entity_id` + `cache` shape
-  and a comment calling out that it needs to be verified against the
-  user's actual HA version before relying on it.
+  `ALERT_TEMP_C` (backend, default 32°C) is intentionally lower than and
+  independent of `EMERGENCY_TEMP_C` (firmware, default 35°C, offline-only
+  physical cutoff) — one is an early-warning response while the network
+  is up, the other is a last-resort floor for when it isn't.
+- **No Home Assistant notification channel - forces fan+AC on directly
+  instead**: the original design spoke a TTS alert via a Google Home
+  speaker (`ha_client.speak()`/`send_alert()`, debounced via
+  `HA_ALERT_DEBOUNCE_SECONDS`) and toggled a separate alert-side-effect
+  switch (`HA_SWITCH_ENTITY`) when `ALERT_TEMP_C` was crossed. With no
+  media/speaker device actually connected, that notification was pure
+  dead weight - removed entirely (`speak()`, `send_alert()`,
+  `toggle_switch()`, `toggle_grow_tent_switch()`, and their config all
+  deleted from `ha_client.py`/`.env.example`). Crossing `ALERT_TEMP_C` now
+  directly forces `fan` and `ac` on in `post_telemetry()`, overriding
+  whatever auto/manual mode or the decision engine just decided for this
+  cycle - a real cooling response instead of a notification nobody could
+  hear. Applied inline (not backgrounded) so fan's forced state reaches
+  the ESP32 in the *same* telemetry response rather than waiting for the
+  next poll; AC still goes through the existing `_sync_ac_to_ha`
+  background push like any other AC state change.
+  - **Not one-way, unlike the firmware's `EMERGENCY_TEMP_C` floor**: this
+    check re-runs every cycle against the live reading, so once
+    temperature drops back below `ALERT_TEMP_C` it simply stops
+    re-forcing fan/AC on - whatever auto/manual mode or the decision
+    engine decides from that point on takes back over. It doesn't
+    proactively turn them back off either, since that's not this
+    feature's job - decide_relay_state()'s own temperature rules already
+    never turn fan/AC off on a temperature drop (only humidity's low
+    branch does), so nothing about this change alters that existing
+    behavior.
 - **AC as a Home-Assistant-only device (no ESP32 relay)**: for a real
   deployment where the AC is itself a Google Home device rather than
   something wired into the relay board, added `ha_client.set_ac()` /
@@ -99,16 +154,14 @@ of silently decided.
     smart plug is a `switch.*` entity; a native smart AC/mini-split is
     usually `climate.*`. Rather than guess which one a given user has,
     the domain (and thus which HA service gets called) is an env var.
-  - **Backgrounded, not synchronous**: `/api/telemetry` now schedules the
-    HA push via FastAPI `BackgroundTasks` instead of calling it inline.
-    Before this change, a slow Home Assistant call could add up to
+  - **Backgrounded, not synchronous**: `/api/telemetry` schedules the HA
+    push via FastAPI `BackgroundTasks` instead of calling it inline. A
+    slow Home Assistant call could otherwise add up to
     `HA_REQUEST_TIMEOUT_SECONDS` (default 5s) of latency to the
     `/api/telemetry` response — uncomfortably close to the firmware's own
     ~5s HTTP timeout, risking a telemetry POST timing out on the ESP32
     side purely because HA was slow, which would then trip the firmware's
     "POST failed → force pump off" safety path for an unrelated reason.
-    Applied the same backgrounding to the existing alert dispatch for
-    consistency.
   - **`/api/relay` pushes AC changes immediately**: fan/pump manual
     commands rely on the ESP32 polling `commanded_relay_state` on its next
     cycle, but there's no ESP32 relay for AC to poll into. Without an
@@ -116,12 +169,11 @@ of silently decided.
     do nothing until the next telemetry cycle (up to
     `TELEMETRY_INTERVAL_MS`, default 20s) coincidentally re-synced it.
   - **`/api/status` reports HA-confirmed state, not the ESP32's**: the
-    ESP32 still receives and could report back an `ac` value from its
-    (now unwired) relay pin, but that value means nothing physically.
+    ESP32 has no `ac` relay pin to report a real value for at all.
     `get_status()` substitutes `AppState.last_ha_ac_state` — the last
     state actually confirmed applied via a successful HA call — so the
     dashboard's pending indicator compares against reality instead of a
-    disconnected GPIO pin.
+    field the ESP32 never meaningfully populates.
   - **Retry semantics**: `_sync_ac_to_ha` only marks a state "confirmed"
     on a successful HA call, so a failed push (HA temporarily down) gets
     retried on the next telemetry cycle rather than silently drifting out
@@ -135,9 +187,9 @@ of silently decided.
   /api/status` is polled every 5s by the dashboard, and `/api/telemetry`
   has the ESP32 waiting on its response with a firmware-side timeout of
   its own - neither can afford to block on a live call to Home Assistant.
-  Added a scheduler job (`_check_ha_connection`, default every 30s) that
-  calls `ha_client.check_connection()` (`GET {HA_URL}/api/`, HA's own
-  base health endpoint - works without any entity configured) and caches
+  A scheduler job (`_check_ha_connection`, default every 30s) calls
+  `ha_client.check_connection()` (`GET {HA_URL}/api/`, HA's own base
+  health endpoint - works without any entity configured) and caches
   `reachable`/`checked_at` on `AppState`; both read endpoints just return
   the cached value. Trade-off: the indicator can lag reality by up to the
   poll interval - accepted since immediate accuracy would mean either
@@ -157,13 +209,12 @@ of silently decided.
 
 - **A fourth, independent ESP32 relay, not folded into the auto/manual
   relays**: the light gets its own `RELAY_LIGHT_PIN` (firmware) and its
-  own `light` field on `RelayState`, entirely separate from fan/ac/pump.
-  It is never passed to `decide_relay_state()` and is not gated by the
-  environmental `mode` at all - the requirement was explicit that light
-  "will not be affected by auto mode." A new relay channel was chosen
-  over repurposing the AC's now-unused pin (AC moved to Home Assistant
-  control, see above) to keep the two features independent: reconnecting
-  a physical AC relay later shouldn't have any bearing on the light relay.
+  own `light` field on `RelayState`, entirely separate from
+  fan/ac/pump. It is never passed to `decide_relay_state()` and is not
+  gated by the environmental `mode` at all - the requirement was explicit
+  that light "will not be affected by auto mode." A dedicated relay
+  channel keeps the light fully independent of the other outputs, which
+  are all decided together by the same function.
 - **Schedule anchored to UTC midnight, not to when it was enabled**: the
   brief describes a duration ("18 on / 6 off"), not a specific start
   time, so `is_light_on(now_utc, on_hours)` is a pure function of the
@@ -190,9 +241,9 @@ of silently decided.
   even while the schedule is off (so it's ready the instant it's turned
   on). `POST /api/light/manual` is rejected with `409` while the schedule
   is enabled, deliberately mirroring how `/api/relay` already rejects a
-  manual fan/ac/pump command outside manual mode - one consistent pattern
-  for "who owns this relay right now" across the whole app, rather than
-  inventing a second one for light.
+  manual fan/ac/pump command outside manual mode - one consistent
+  pattern for "who owns this relay right now" across the whole app,
+  rather than inventing a second one for light.
 - **No auto-revert for manual light control**: unlike the environmental
   `mode`, switching the light's schedule off doesn't time out back to
   schedule-on after inactivity. The brief describes the schedule toggle
@@ -215,8 +266,7 @@ of silently decided.
   the same reasoning `temp_c`/`humidity`/`soil_moisture` are columns
   rather than a bundled JSON blob. Populated from the ESP32's *reported*
   state (physical truth) rather than the commanded one, consistent with
-  how "reported" is treated as ground truth everywhere else (e.g. the
-  AC's HA-confirmed state in `/api/status`).
+  how "reported" is treated as ground truth everywhere else in the app.
   - **Migration note**: `SQLModel.metadata.create_all()` (run on
     startup) only creates tables that don't exist yet - it does not add
     columns to an existing table. Anyone with a `data/grow.db` from
@@ -231,6 +281,44 @@ of silently decided.
     `data/grow.db` would lose all historical readings, not just the new
     column - too large a cost for a one-column addition when the fix is
     one SQL statement.
+
+## Exhaust schedule
+
+- **Removed from `decide_relay_state()` entirely, given a schedule
+  instead**: exhaust briefly went through two other designs first (a
+  physical relay escalating alongside AC on humidity/temperature, then a
+  physical relay replacing AC's Home-Assistant control outright) before
+  landing here: exhaust is never touched by sensor readings, auto/manual
+  `mode`, or `decide_relay_state()` at all. It's structurally identical to
+  the light - its own relay, its own schedule/manual master switch - just
+  with a different schedule *shape* (see next bullet).
+- **Run/interval duty cycle, not an on_hours window**: light's schedule
+  fits a once-a-day photoperiod; exhaust ventilation calls for a much
+  higher-frequency repeating cycle (e.g. "1 minute every 5"), so
+  `exhaust_schedule.is_exhaust_on()` takes `run_minutes` and
+  `interval_minutes` (both 1-60 via dashboard dropdowns) instead of a
+  single `on_hours`. Anchored to 00:00 UTC exactly like the light
+  schedule, for the same reason: a pure function of wall-clock time needs
+  no stored "next toggle" state and is correct immediately after a
+  backend restart.
+- **`run_minutes` cannot exceed `interval_minutes`**: unlike light (where
+  `off_hours` is always `24 - on_hours`, computed rather than a second
+  user input, so no invalid combination is possible), exhaust takes two
+  independent user inputs. Running longer than the cycle itself is
+  meaningless, so `ExhaustScheduleIn` rejects that combination with a
+  `422` via a pydantic model validator rather than silently clamping it.
+- **`off_minutes` is a computed response field, not a third input**: same
+  reasoning as light's `off_hours` - `interval_minutes - run_minutes` is
+  always derivable, so making it a separate settable field would just
+  invite it to disagree with the other two.
+- **Endpoints and behavior mirror `/api/light/schedule` and
+  `/api/light/manual` exactly**: `POST /api/exhaust/schedule` combines
+  `enabled` + `run_minutes` + `interval_minutes` into one call (values
+  saved even while the schedule is off, so they're ready the instant it's
+  turned on); `POST /api/exhaust/manual` is rejected with `409` while the
+  schedule is enabled. Reusing the exact same pattern rather than
+  inventing a different shape for exhaust keeps "who owns this relay
+  right now" consistent across every schedule-driven relay in the app.
 
 ## History charts
 
@@ -358,24 +446,26 @@ of silently decided.
   segmented control needs its own scoped rule for the same reason - the
   shared `.segmented`/`.segmented-thumb` base styling is fine to reuse,
   the position/color override per state is not.
-- **AC moved out of the relay grid into its own "home assistant" panel**:
-  previously AC sat alongside fan/pump as a third tile in the `.relays`
-  grid, which implied it's the same kind of thing - a local ESP32 relay.
-  It isn't: AC has no physical relay and depends entirely on Home
-  Assistant being reachable (see "AC: no physical relay" above), so it
-  now gets a visually separate panel, distinguishing it the same way the
-  light panel is separated (its own section, its own explanatory caption)
-  rather than blending into a grid of otherwise-identical tiles.
-  `.relays` dropped from 3 columns to 2 (fan, pump) accordingly, and the
-  AC/light "single control + pending indicator" row markup was
-  generalized from light-specific classes (`.light-btn`, `.light-row`,
-  ...) to shared ones (`.control-btn`, `.control-row`, ...) since both
-  panels now need the identical layout - kept the light-specific
-  behavior (schedule gating) in JS, not duplicated in CSS.
+- **Exhaust got its own panel, structured like the light panel, not a
+  tile in `.relays`**: exhaust briefly sat as a plain on/off tile
+  alongside fan/pump (`.relays` grew to 3 columns for it), back when it
+  was a sensor-driven physical relay like fan/pump. Once it became
+  schedule-driven instead, that no longer fit - a bare on/off tile has
+  nowhere to put a schedule/manual toggle or the run/interval dropdowns.
+  `.relays` reverted to 2 columns (fan, pump), and exhaust got its own
+  panel reusing the exact same `.control-btn`/`.control-row`/
+  `.schedule-controls` markup the light panel already uses, generalized
+  from `.light-schedule-controls` to `.schedule-controls` so both panels
+  share one class instead of duplicating near-identical CSS.
+  AC keeps its own separate "home assistant" panel throughout all of
+  this, unchanged: it's still not the same kind of thing as a local
+  relay, and still depends entirely on Home Assistant being reachable, so
+  it keeps its own section with the live reachability badge rather than
+  blending into either the relay grid or the schedule panels.
 - **AC's "on" accent is teal, not the green/amber used elsewhere**: every
-  other "on" state (fan, pump, light) uses green or amber, so AC needed
-  its own color to read as visually distinct at a glance - reusing teal
-  (already in the palette for the humidity readout) both avoids
+  other "on" state (fan, exhaust, pump, light) uses green or amber, so AC
+  needed its own color to read as visually distinct at a glance - reusing
+  teal (already in the palette for the humidity readout) both avoids
   introducing a new color and loosely signals "this is the
   cooler/external one," consistent with a Home Assistant-mediated
   control rather than a direct relay.

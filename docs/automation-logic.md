@@ -6,20 +6,25 @@ readings and its actual relay states, and applies whatever the backend
 tells it to do.
 
 Everything from here down through "Manual mode" covers **fan, AC, and
-pump** — the three relays `backend/decision_engine.py` actually decides,
-and only while the system is in **auto** mode. The **light** is covered
-separately, below, because it isn't part of any of that: it has its own
-schedule and is never touched by `decide_relay_state()` or by auto/manual
-mode at all.
+pump** — the three outputs `backend/decision_engine.py` actually decides,
+and only while the system is in **auto** mode. Fan and pump are physical
+ESP32 relays; AC has no relay at all and is driven through Home Assistant
+instead (see "AC: no physical relay" below). **Light and exhaust** are
+covered separately, further below, because neither is part of any of
+that: each has its own schedule and is never touched by
+`decide_relay_state()`, by auto/manual mode, or by any sensor reading at
+all.
 
 ## What gets measured
 
 - **Temperature** and **humidity** from the DHT22.
 - **Soil moisture** from the analog probe, converted to a 0–100% scale.
-- A **rolling baseline** temperature and humidity, averaged over the last
-  `BASELINE_WINDOW_MINUTES` (default 30) of readings. "Rising" or "falling"
-  always means relative to this baseline, not an absolute number — a tent
-  that's steadily warm isn't a rise; a sudden climb is.
+
+Every rule below compares the current reading directly against a fixed
+"grow profile" threshold - there's no baseline or history lookup. The
+same reading always produces the same decision, and retuning for a
+different plant/stage/tent is purely an env-var edit (see
+`backend/.env.example`).
 
 ## Humidity rules
 
@@ -34,14 +39,19 @@ mode at all.
 
 ## Temperature rules
 
-Measured as a rise above the rolling baseline:
+All absolute tent temperature, not a rise relative to anything:
 
-- **A moderate rise** (`TEMP_RISE_FAN_THRESHOLD_C` to `TEMP_RISE_AC_THRESHOLD_C`,
-  default 2–3°C): turn the **fan on alone**. Air movement alone is often
-  enough to knock a couple of degrees off without pulling in outside air.
-- **A larger or sustained rise** (at or above `TEMP_RISE_AC_THRESHOLD_C`,
-  default 3°C): **escalate to AC**, which handles both temperature and
-  humidity at once rather than relying on air movement alone.
+- **At or above `TEMP_FAN_THRESHOLD_C`** (default 26.0°C): turn the
+  **fan on alone**. Air movement alone is often enough to knock a couple
+  of degrees off without pulling in outside air.
+- **At or above `TEMP_AC_THRESHOLD_C`** (default 28.0°C, checked before
+  the fan threshold so the higher bar wins): **escalate to AC**, which
+  handles both temperature and humidity at once rather than relying on
+  air movement alone.
+- **At or below `TEMP_LOW_THRESHOLD_C`** (default 18.0°C, unusually
+  cold): turn the **AC off** and the **fan on**, mirroring the
+  low-humidity rule — pulling in comparatively warmer room air rather
+  than cooling a tent that's already too cold.
 
 ## Soil moisture / watering
 
@@ -75,8 +85,8 @@ what differs is how it gets applied:
   runs in the background so a slow or unreachable Home Assistant never
   delays the ESP32's telemetry response.
 - `/api/status` reports the AC's last **Home Assistant-confirmed** state
-  as its "reported" value, not whatever the ESP32's (now unwired) AC
-  relay pin happens to read — that pin no longer means anything.
+  as its "reported" value, since the ESP32 has no relay pin for it to
+  report at all.
 
 This does mean the AC loses the one piece of true offline resilience the
 other relays have: if the network or Home Assistant is down, the AC just
@@ -128,7 +138,7 @@ of its own, controlled from the dashboard:
 
 The dashboard's schedule toggle is the master switch between these two
 states; attempting a manual command while the schedule is on is rejected
-(`409`), the same way `/api/relay` rejects a manual fan/AC/pump command
+(`409`), the same way `/api/relay` rejects a manual fan/ac/pump command
 outside manual mode.
 
 There's no offline-specific logic for the light beyond what every other
@@ -136,6 +146,32 @@ physical relay already gets: it holds its last-commanded state if the
 network drops, same as fan. Unlike fan, though, its schedule keeps
 computing correctly in the background even while offline — it just can't
 reach the ESP32 to apply a change until connectivity returns.
+
+## Exhaust: its own duty-cycle schedule, never sensor-driven
+
+The exhaust fan has its own ESP32 relay too, and follows the exact same
+"own schedule, independent of mode" pattern as the light — but the
+schedule *shape* is different. Rather than one on/off window per day, it's
+a repeating **duty cycle**: on for `run_minutes`, then off for the rest of
+every `interval_minutes` window, cycling continuously (`exhaust_schedule.
+is_exhaust_on()`). Both `run_minutes` and `interval_minutes` are 1-60,
+picked from dashboard dropdowns, and the API rejects `run_minutes` greater
+than `interval_minutes` (`422`) since running longer than the cycle itself
+is meaningless.
+
+- **Schedule on**: `is_exhaust_on()` decides, recomputed fresh every
+  telemetry cycle - same restart-safety property as the light schedule,
+  since it's a pure function of wall-clock time with no stored "next
+  toggle" state.
+- **Schedule off**: the exhaust is under direct manual control from the
+  dashboard (`POST /api/exhaust/manual`) — it just holds whatever it was
+  last set to.
+
+Same master-switch pattern as light: a manual command while the schedule
+is enabled is rejected with `409`. Crucially, **exhaust is never touched
+by `decide_relay_state()`** — no humidity or temperature reading ever
+turns it on or off; only its own schedule or a manual dashboard command
+does.
 
 ## What the firmware does entirely on its own
 
@@ -150,9 +186,9 @@ connection:
   unconditionally.
 - **While offline, if temperature reaches `EMERGENCY_TEMP_C`** (default
   35.0°C — sanity-check this against your actual tent before trusting it):
-  force the fan and AC on locally, as a one-way floor. This is not real
-  climate control, just a last-resort heat cutoff while nothing else is
-  watching. **If the AC has no physical relay** (see above), this only
-  actually does anything for the fan — the "ac" side of it drives an
-  unwired pin.
+  force the fan and exhaust on locally, as a one-way floor. This is not
+  real climate control, just a last-resort heat cutoff while nothing else
+  is watching. **AC gets no such floor** - it has no physical relay for
+  this firmware-only logic to drive, so while offline it just holds
+  whatever it was last set to.
 - Everything else holds its last-commanded state while offline.

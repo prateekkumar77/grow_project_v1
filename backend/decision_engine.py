@@ -1,11 +1,10 @@
 """Pure decision logic: sensor reading -> relay command.
 
-No I/O happens in decide_relay_state itself. The caller (main.py) is
-responsible for computing a rolling baseline temp/humidity from history and
-handing it in as part of `Reading`, and for persisting/transmitting the
-result. When mode == "manual" the caller should not call this function at
-all - it should just keep using the last dashboard-commanded state, per the
-brief ("this function is not consulted for relay state").
+No I/O happens in decide_relay_state itself - every threshold it compares
+against is a fixed, env-configurable "grow profile" value, never computed
+from history. When mode == "manual" the caller should not call this
+function at all - it should just keep using the last dashboard-commanded
+state, per the brief ("this function is not consulted for relay state").
 """
 import os
 from dataclasses import dataclass
@@ -17,8 +16,9 @@ from models import RelayState
 HUMIDITY_HIGH_THRESHOLD = float(os.getenv("HUMIDITY_HIGH_THRESHOLD", "65"))
 HUMIDITY_LOW_THRESHOLD = float(os.getenv("HUMIDITY_LOW_THRESHOLD", "40"))
 
-TEMP_RISE_FAN_THRESHOLD_C = float(os.getenv("TEMP_RISE_FAN_THRESHOLD_C", "2.0"))
-TEMP_RISE_AC_THRESHOLD_C = float(os.getenv("TEMP_RISE_AC_THRESHOLD_C", "3.0"))
+TEMP_FAN_THRESHOLD_C = float(os.getenv("TEMP_FAN_THRESHOLD_C", "26.0"))
+TEMP_AC_THRESHOLD_C = float(os.getenv("TEMP_AC_THRESHOLD_C", "28.0"))
+TEMP_LOW_THRESHOLD_C = float(os.getenv("TEMP_LOW_THRESHOLD_C", "18.0"))
 
 SOIL_MOISTURE_LOW_THRESHOLD = float(os.getenv("SOIL_MOISTURE_LOW_THRESHOLD", "35"))
 # Pump switches back off only once soil moisture clears the low threshold by
@@ -31,8 +31,6 @@ class Reading:
     temp_c: float
     humidity: float
     soil_moisture: float
-    baseline_temp_c: float
-    baseline_humidity: float
 
 
 def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelayState:
@@ -40,11 +38,9 @@ def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelaySta
     ac = previous_state.ac
     pump = previous_state.pump
 
-    temp_delta = reading.temp_c - reading.baseline_temp_c
-
     # --- humidity ------------------------------------------------------------
     if reading.humidity >= HUMIDITY_HIGH_THRESHOLD:
-        # Rising humidity -> AC brings it down.
+        # High humidity -> AC brings it down.
         ac = True
     elif reading.humidity <= HUMIDITY_LOW_THRESHOLD:
         # Unusually low humidity (rare) -> AC off, fan pulls in (more humid)
@@ -53,12 +49,17 @@ def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelaySta
         fan = True
 
     # --- temperature -----------------------------------------------------------
-    if temp_delta >= TEMP_RISE_AC_THRESHOLD_C:
-        # Larger/sustained rise -> escalate to AC (lowers temp and humidity
+    if reading.temp_c >= TEMP_AC_THRESHOLD_C:
+        # Hot enough to need active cooling -> AC (lowers temp and humidity
         # together).
         ac = True
-    elif temp_delta >= TEMP_RISE_FAN_THRESHOLD_C:
-        # Moderate rise -> fan alone first, not AC.
+    elif reading.temp_c >= TEMP_FAN_THRESHOLD_C:
+        # Moderately warm -> fan alone first, not AC.
+        fan = True
+    elif reading.temp_c <= TEMP_LOW_THRESHOLD_C:
+        # Unusually cold -> AC off (no point cooling further), fan pulls in
+        # comparatively warmer room air instead.
+        ac = False
         fan = True
 
     # --- soil moisture / pump ---------------------------------------------------
@@ -68,4 +69,8 @@ def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelaySta
         pump = False
     # else: within the hysteresis band - hold whatever the pump was doing.
 
+    # Exhaust is never touched here - it's driven entirely by its own
+    # run/interval duty-cycle schedule (see exhaust_schedule.py), same as
+    # light is driven by its own schedule. The caller overwrites it after
+    # this call, same pattern as light.
     return RelayState(fan=fan, ac=ac, pump=pump)

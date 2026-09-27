@@ -30,7 +30,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   req["soil_moisture"] = reading.soil_moisture;
   JsonObject relayState = req.createNestedObject("relay_state");
   relayState["fan"] = actual.fan;
-  relayState["ac"] = actual.ac;
+  relayState["exhaust"] = actual.exhaust;
   relayState["pump"] = actual.pump;
   relayState["light"] = actual.light;
 
@@ -61,7 +61,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   outMode = res["mode"].as<String>();
   JsonObject cmd = res["relay_state"];
   outCommanded.fan = cmd["fan"] | false;
-  outCommanded.ac = cmd["ac"] | false;
+  outCommanded.exhaust = cmd["exhaust"] | false;
   outCommanded.pump = cmd["pump"] | false;
   outCommanded.light = cmd["light"] | false;
 

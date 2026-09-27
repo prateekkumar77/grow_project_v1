@@ -2,12 +2,23 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, model_validator
 from sqlmodel import Field, SQLModel
 
 
 class RelayState(BaseModel):
     fan: bool = False
+    # Has its own ESP32 relay like fan/pump, but is never touched by
+    # decide_relay_state() or any sensor reading - it's driven entirely by
+    # its own run/interval duty-cycle schedule (or manual control when
+    # that schedule is off). See ExhaustStatus below.
+    exhaust: bool = False
+    # AC has no physical ESP32 relay - it's a Google Home device driven
+    # entirely through Home Assistant (see ha_client.set_ac()). Unlike
+    # exhaust, it IS part of decide_relay_state()'s humidity/temperature
+    # escalation. The ESP32 never reports a real value for this field (no
+    # pin to read), so `reported_relay_state.ac` is overridden with the
+    # last Home-Assistant-confirmed state instead.
     ac: bool = False
     pump: bool = False
     # Grow light. Has its own ESP32 relay like fan/pump, but is never
@@ -64,6 +75,31 @@ class LightStatus(BaseModel):
     reported: Optional[bool] = None
 
 
+class ExhaustScheduleIn(BaseModel):
+    enabled: bool
+    run_minutes: int = PydanticField(ge=1, le=60)
+    interval_minutes: int = PydanticField(ge=1, le=60)
+
+    @model_validator(mode="after")
+    def _run_within_interval(self) -> "ExhaustScheduleIn":
+        if self.run_minutes > self.interval_minutes:
+            raise ValueError("run_minutes cannot be greater than interval_minutes")
+        return self
+
+
+class ExhaustManualIn(BaseModel):
+    state: bool
+
+
+class ExhaustStatus(BaseModel):
+    schedule_enabled: bool
+    run_minutes: int
+    interval_minutes: int
+    off_minutes: int
+    commanded: bool
+    reported: Optional[bool] = None
+
+
 class HaStatus(BaseModel):
     # None = not checked yet (e.g. right after backend startup, before the
     # first scheduled health check completes) - distinct from a known-bad
@@ -81,6 +117,7 @@ class StatusOut(BaseModel):
     latest_reading: Optional[SensorReading]
     offline: bool
     light: LightStatus
+    exhaust: ExhaustStatus
     ha: HaStatus
 
 
@@ -103,6 +140,6 @@ class ReadingRow(SQLModel, table=True):
     # reported state (physical truth), not the commanded one - matches
     # how the dashboard treats "reported" as ground truth elsewhere.
     light_state: bool
-    reported_relay_state: str  # JSON: {"fan": bool, "ac": bool, "pump": bool, "light": bool}
+    reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str

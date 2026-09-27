@@ -12,11 +12,11 @@ void RelayController::writePin(int pin, bool on) {
 
 void RelayController::begin() {
   pinMode(RELAY_FAN_PIN, OUTPUT);
-  pinMode(RELAY_AC_PIN, OUTPUT);
+  pinMode(RELAY_EXHAUST_PIN, OUTPUT);
   pinMode(RELAY_PUMP_PIN, OUTPUT);
   pinMode(RELAY_LIGHT_PIN, OUTPUT);
   setFan(false);
-  setAc(false);
+  setExhaust(false);
   setPump(false);
   setLight(false);
 }
@@ -26,9 +26,9 @@ void RelayController::setFan(bool on) {
   writePin(RELAY_FAN_PIN, on);
 }
 
-void RelayController::setAc(bool on) {
-  _ac = on;
-  writePin(RELAY_AC_PIN, on);
+void RelayController::setExhaust(bool on) {
+  _exhaust = on;
+  writePin(RELAY_EXHAUST_PIN, on);
 }
 
 void RelayController::setPump(bool on) {
@@ -41,9 +41,9 @@ void RelayController::setLight(bool on) {
   writePin(RELAY_LIGHT_PIN, on);
 }
 
-void RelayController::applyCommand(bool fan, bool ac, bool pump, bool light) {
+void RelayController::applyCommand(bool fan, bool exhaust, bool pump, bool light) {
   setFan(fan);
-  setAc(ac);
+  setExhaust(exhaust);
   setLight(light);
 
   if (pump && !_pump) {
@@ -76,7 +76,7 @@ void RelayController::tick(float lastTempC, bool wifiConnected) {
   // one-way floor, not real control.
   if (!wifiConnected && !isnan(lastTempC) && lastTempC >= EMERGENCY_TEMP_C) {
     setFan(true);
-    setAc(true);
+    setExhaust(true);
   }
 }
 

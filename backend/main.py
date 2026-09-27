@@ -14,9 +14,13 @@ import ha_client
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
+from exhaust_schedule import is_exhaust_on
 from excel_export import EXPORT_PATH, export_readings_to_excel
 from light_schedule import is_light_on
 from models import (
+    ExhaustManualIn,
+    ExhaustScheduleIn,
+    ExhaustStatus,
     HaStatus,
     LightManualIn,
     LightScheduleIn,
@@ -37,7 +41,6 @@ logger = logging.getLogger("main")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/grow.db")
 OFFLINE_THRESHOLD_SECONDS = float(os.getenv("OFFLINE_THRESHOLD_SECONDS", "90"))
-BASELINE_WINDOW_MINUTES = float(os.getenv("BASELINE_WINDOW_MINUTES", "30"))
 ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
@@ -55,6 +58,13 @@ TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
 # for what's in the tent.
 LIGHT_DEFAULT_ON_HOURS = int(os.getenv("LIGHT_DEFAULT_ON_HOURS", "18"))
 LIGHT_SCHEDULE_ENABLED_DEFAULT = os.getenv("LIGHT_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
+
+# Exhaust schedule defaults - same "starts off" rationale as the light
+# schedule: a fresh deploy shouldn't start cycling a relay on an
+# unreviewed default run/interval before the grower has confirmed it.
+EXHAUST_DEFAULT_RUN_MINUTES = int(os.getenv("EXHAUST_DEFAULT_RUN_MINUTES", "1"))
+EXHAUST_DEFAULT_INTERVAL_MINUTES = int(os.getenv("EXHAUST_DEFAULT_INTERVAL_MINUTES", "5"))
+EXHAUST_SCHEDULE_ENABLED_DEFAULT = os.getenv("EXHAUST_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
@@ -75,7 +85,7 @@ class AppState:
         # The AC has no physical relay - it's controlled entirely through
         # Home Assistant. This tracks the last state we successfully
         # confirmed HA applied, so /api/status can report real AC state
-        # instead of the ESP32's now-unused "ac" relay pin, and so we only
+        # instead of the ESP32's meaningless "ac" field, and so we only
         # call HA when the desired state actually changes.
         self.last_ha_ac_state: Optional[bool] = None
         # Light: independent of `mode` entirely. Either the schedule
@@ -86,6 +96,15 @@ class AppState:
         self.light_on_hours: int = LIGHT_DEFAULT_ON_HOURS
         self.light_commanded: bool = False
         self.light_reported: Optional[bool] = None
+        # Exhaust: same independent-of-`mode` pattern as light, but a
+        # repeating run/interval duty cycle (is_exhaust_on) instead of a
+        # once-a-day on/off window. Never touched by decide_relay_state()
+        # or any sensor reading.
+        self.exhaust_schedule_enabled: bool = EXHAUST_SCHEDULE_ENABLED_DEFAULT
+        self.exhaust_run_minutes: int = EXHAUST_DEFAULT_RUN_MINUTES
+        self.exhaust_interval_minutes: int = EXHAUST_DEFAULT_INTERVAL_MINUTES
+        self.exhaust_commanded: bool = False
+        self.exhaust_reported: Optional[bool] = None
         # Home Assistant reachability, refreshed on its own schedule (see
         # scheduler._check_ha_connection) rather than per-request. None
         # until the first check completes.
@@ -116,35 +135,6 @@ def on_shutdown():
         scheduler.shutdown(wait=False)
 
 
-def _compute_baseline(session: Session, now: datetime) -> tuple[float, float, float]:
-    """Rolling average temp/humidity over the last BASELINE_WINDOW_MINUTES,
-    used by the decision engine to detect a *rise* rather than react to
-    absolute temperature. Falls back to the current reading (delta=0) when
-    there's no history yet."""
-    window_start = now - timedelta(minutes=BASELINE_WINDOW_MINUTES)
-    rows = session.exec(
-        select(ReadingRow).where(ReadingRow.timestamp >= window_start)
-    ).all()
-    if not rows:
-        return None, None, 0  # type: ignore[return-value]
-    avg_temp = sum(r.temp_c for r in rows) / len(rows)
-    avg_humidity = sum(r.humidity for r in rows) / len(rows)
-    return avg_temp, avg_humidity, len(rows)
-
-
-def _maybe_send_alerts(reading: SensorReading, reported: RelayState) -> None:
-    """Best-effort HA notifications. Must never raise into the caller."""
-    try:
-        if reading.temp_c >= ALERT_TEMP_C:
-            ha_client.send_alert(
-                "high_temp",
-                f"Grow tent temperature is {reading.temp_c:.1f} degrees, above the {ALERT_TEMP_C:.0f} degree alert threshold.",
-            )
-            ha_client.toggle_grow_tent_switch(True)
-    except Exception:  # noqa: BLE001
-        logger.exception("Alert dispatch failed")
-
-
 def _light_status(now: datetime) -> LightStatus:
     """Must be called with app_state.lock held. Single source of truth for
     "what should the light be doing right now" - used by /api/telemetry,
@@ -157,6 +147,26 @@ def _light_status(now: datetime) -> LightStatus:
         off_hours=24 - app_state.light_on_hours,
         commanded=commanded,
         reported=app_state.light_reported,
+    )
+
+
+def _exhaust_status(now: datetime) -> ExhaustStatus:
+    """Must be called with app_state.lock held. Single source of truth for
+    "what should exhaust be doing right now" - mirrors _light_status()
+    exactly, just with a run/interval duty cycle instead of an on_hours
+    window."""
+    commanded = (
+        is_exhaust_on(now, app_state.exhaust_run_minutes, app_state.exhaust_interval_minutes)
+        if app_state.exhaust_schedule_enabled
+        else app_state.exhaust_commanded
+    )
+    return ExhaustStatus(
+        schedule_enabled=app_state.exhaust_schedule_enabled,
+        run_minutes=app_state.exhaust_run_minutes,
+        interval_minutes=app_state.exhaust_interval_minutes,
+        off_minutes=app_state.exhaust_interval_minutes - app_state.exhaust_run_minutes,
+        commanded=commanded,
+        reported=app_state.exhaust_reported,
     )
 
 
@@ -190,25 +200,38 @@ def post_telemetry(
         app_state.last_seen = now
         app_state.reported_relay_state = payload.relay_state
         app_state.light_reported = payload.relay_state.light
+        app_state.exhaust_reported = payload.relay_state.exhaust
         app_state.latest_reading = reading
 
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
         else:
-            baseline_temp, baseline_humidity, _n = _compute_baseline(session, now)
             de_reading = DecisionReading(
                 temp_c=reading.temp_c,
                 humidity=reading.humidity,
                 soil_moisture=reading.soil_moisture,
-                baseline_temp_c=baseline_temp if baseline_temp is not None else reading.temp_c,
-                baseline_humidity=baseline_humidity if baseline_humidity is not None else reading.humidity,
             )
             commanded = decide_relay_state(de_reading, app_state.commanded_relay_state)
 
-        # Light is never touched by decide_relay_state() or the
-        # auto/manual mode above - it's driven entirely by its own
+        # Light and exhaust are never touched by decide_relay_state() or
+        # the auto/manual mode above - each is driven entirely by its own
         # schedule/manual switch, computed fresh every cycle.
-        commanded = commanded.model_copy(update={"light": _light_status(now).commanded})
+        commanded = commanded.model_copy(
+            update={
+                "light": _light_status(now).commanded,
+                "exhaust": _exhaust_status(now).commanded,
+            }
+        )
+
+        # No Home Assistant alert/switch here - no media/speaker device is
+        # connected. Instead, crossing ALERT_TEMP_C forces fan and AC on
+        # directly, overriding auto/manual mode, as an early-warning
+        # cooling response. Not one-way: once the reading drops back below
+        # the threshold, normal mode/decision-engine logic resumes control
+        # on the next cycle.
+        if reading.temp_c >= ALERT_TEMP_C:
+            commanded = commanded.model_copy(update={"fan": True, "ac": True})
+
         app_state.commanded_relay_state = commanded
 
         mode = app_state.mode
@@ -229,7 +252,6 @@ def post_telemetry(
     # Backgrounded so a slow/unreachable Home Assistant never delays the
     # response the ESP32 is waiting on (it has its own ~5s HTTP timeout,
     # the same order of magnitude as HA_REQUEST_TIMEOUT_SECONDS).
-    background_tasks.add_task(_maybe_send_alerts, reading, payload.relay_state)
     background_tasks.add_task(_sync_ac_to_ha, commanded.ac)
 
     return TelemetryOut(mode=mode, relay_state=commanded)
@@ -243,20 +265,23 @@ def get_status():
             app_state.last_seen is None
             or (now - app_state.last_seen).total_seconds() > OFFLINE_THRESHOLD_SECONDS
         )
-        # The ESP32's "ac" relay pin is unwired (AC is HA-only) and its
-        # reported value is meaningless, so report our own last-confirmed
-        # Home Assistant state for ac instead - that's the only place the
-        # real AC state actually lives.
+        # The ESP32 has no "ac" relay pin at all (unlike fan/exhaust/pump) -
+        # its reported value is meaningless, so report our own
+        # last-confirmed Home Assistant state for ac instead - that's the
+        # only place the real AC state actually lives.
         reported = app_state.reported_relay_state
         if reported is not None and app_state.last_ha_ac_state is not None:
             reported = reported.model_copy(update={"ac": app_state.last_ha_ac_state})
 
-        # Commanded light state is recomputed fresh here (not read from
-        # commanded_relay_state, which only updates on the ESP32's own
-        # ~20s telemetry cadence) so the dashboard reflects a schedule
+        # Commanded light/exhaust state is recomputed fresh here (not read
+        # from commanded_relay_state, which only updates on the ESP32's
+        # own ~20s telemetry cadence) so the dashboard reflects a schedule
         # boundary the moment it's crossed, not up to a cycle late.
         commanded = app_state.commanded_relay_state.model_copy(
-            update={"light": _light_status(now).commanded}
+            update={
+                "light": _light_status(now).commanded,
+                "exhaust": _exhaust_status(now).commanded,
+            }
         )
 
         return StatusOut(
@@ -267,6 +292,7 @@ def get_status():
             latest_reading=app_state.latest_reading,
             offline=offline,
             light=_light_status(now),
+            exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
         )
 
@@ -430,6 +456,30 @@ def set_light_manual(payload: LightManualIn):
             raise HTTPException(status_code=409, detail="light schedule is enabled")
         app_state.light_commanded = payload.state
         return _light_status(datetime.utcnow())
+
+
+@app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
+def set_exhaust_schedule(payload: ExhaustScheduleIn):
+    """Master switch for exhaust: enabling the schedule hands control to
+    is_exhaust_on() (independent of the environmental auto/manual `mode`
+    and of any sensor reading); disabling it falls back to whatever was
+    last set via /api/exhaust/manual. run_minutes/interval_minutes are
+    always saved even when the schedule is currently off, so they're
+    ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
+    with app_state.lock:
+        app_state.exhaust_schedule_enabled = payload.enabled
+        app_state.exhaust_run_minutes = payload.run_minutes
+        app_state.exhaust_interval_minutes = payload.interval_minutes
+        return _exhaust_status(datetime.utcnow())
+
+
+@app.post("/api/exhaust/manual", response_model=ExhaustStatus)
+def set_exhaust_manual(payload: ExhaustManualIn):
+    with app_state.lock:
+        if app_state.exhaust_schedule_enabled:
+            raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
+        app_state.exhaust_commanded = payload.state
+        return _exhaust_status(datetime.utcnow())
 
 
 @app.post("/api/export")
