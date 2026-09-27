@@ -152,19 +152,6 @@ def _compute_baseline(session: Session, now: datetime) -> tuple[float, float, fl
     return avg_temp, avg_humidity, len(rows)
 
 
-def _maybe_send_alerts(reading: SensorReading, reported: RelayState) -> None:
-    """Best-effort HA notifications. Must never raise into the caller."""
-    try:
-        if reading.temp_c >= ALERT_TEMP_C:
-            ha_client.send_alert(
-                "high_temp",
-                f"Grow tent temperature is {reading.temp_c:.1f} degrees, above the {ALERT_TEMP_C:.0f} degree alert threshold.",
-            )
-            ha_client.toggle_grow_tent_switch(True)
-    except Exception:  # noqa: BLE001
-        logger.exception("Alert dispatch failed")
-
-
 def _light_status(now: datetime) -> LightStatus:
     """Must be called with app_state.lock held. Single source of truth for
     "what should the light be doing right now" - used by /api/telemetry,
@@ -255,6 +242,16 @@ def post_telemetry(
                 "exhaust": _exhaust_status(now).commanded,
             }
         )
+
+        # No Home Assistant alert/switch here - no media/speaker device is
+        # connected. Instead, crossing ALERT_TEMP_C forces fan and AC on
+        # directly, overriding auto/manual mode, as an early-warning
+        # cooling response. Not one-way: once the reading drops back below
+        # the threshold, normal mode/decision-engine logic resumes control
+        # on the next cycle.
+        if reading.temp_c >= ALERT_TEMP_C:
+            commanded = commanded.model_copy(update={"fan": True, "ac": True})
+
         app_state.commanded_relay_state = commanded
 
         mode = app_state.mode
@@ -275,7 +272,6 @@ def post_telemetry(
     # Backgrounded so a slow/unreachable Home Assistant never delays the
     # response the ESP32 is waiting on (it has its own ~5s HTTP timeout,
     # the same order of magnitude as HA_REQUEST_TIMEOUT_SECONDS).
-    background_tasks.add_task(_maybe_send_alerts, reading, payload.relay_state)
     background_tasks.add_task(_sync_ac_to_ha, commanded.ac)
 
     return TelemetryOut(mode=mode, relay_state=commanded)

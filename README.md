@@ -75,7 +75,7 @@ these form the "grow profile" for whatever's in the tent:
 | `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_AC_THRESHOLD_C` | how far above baseline before fan, then AC, engage |
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `BASELINE_WINDOW_MINUTES` | how far back the rolling baseline looks |
-| `ALERT_TEMP_C` | when the backend pushes a Home Assistant alert |
+| `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
 
 Different plants, growth stages, and tent setups call for different
 values here — e.g. an early/vegetative stage generally tolerates higher
@@ -235,22 +235,20 @@ exception**: it's a Google Home device (a smart plug or native smart
 AC/mini-split) with no ESP32 relay, driven entirely through Home
 Assistant instead — `backend/ha_client.py` calls Home Assistant's REST
 API to turn it on/off, as part of the decision engine's humidity/
-temperature escalation (see "Methodology" above). `ha_client.py` is also
-used for notifications — toggling an alert-side-effect switch and
-announcing alerts via a Google Home speaker (`tts.speak`), debounced so
-the same alert type doesn't repeat more than once every
-`HA_ALERT_DEBOUNCE_SECONDS`. A Home Assistant outage never blocks or
-breaks `/api/telemetry` — failures are logged and ignored, and AC just
-holds its last state until HA comes back.
-
-Confirm the exact `tts.speak` payload against your own Home Assistant
-version via Developer Tools → Actions before relying on it in production;
-see `docs/DECISIONS.md` for why.
+temperature escalation (see "Methodology" above). A Home Assistant outage
+never blocks or breaks `/api/telemetry` — failures are logged and
+ignored, and AC just holds its last state until HA comes back.
 
 The backend never talks to Google directly — it only ever calls Home
 Assistant's REST API over the local network; HA is what actually reaches
-your Google Home devices (Cast for the speaker, whatever integration
-matches your AC for switches).
+your AC (whatever integration matches it — a smart-plug switch or a
+native smart AC).
+
+There's no separate notification/alert channel — no media or speaker
+device is connected, so a high temperature reading doesn't announce
+anything. Instead, crossing `ALERT_TEMP_C` forces fan and AC on directly
+(see the grow-profile table above), which is itself routed through this
+same Home Assistant call for AC.
 
 ### AC as a Google Home device (no physical relay)
 

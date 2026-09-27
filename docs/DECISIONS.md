@@ -82,21 +82,36 @@ of silently decided.
   optional `since`/`until` timestamps, ordered newest-first. Not specified
   exactly in the brief beyond "query params for range/limit."
 - **Alert temperature is separate from the firmware's emergency floor**:
-  `ALERT_TEMP_C` (backend, default 32°C, drives the Home Assistant
-  notification) is intentionally lower than and independent of
-  `EMERGENCY_TEMP_C` (firmware, default 35°C, offline-only physical
-  cutoff) — one is an early warning while the network is up, the other is
-  a last-resort floor for when it isn't.
-- **HA alert debounce state**: kept as an in-memory dict keyed by alert
-  type, not persisted. A backend restart resetting the debounce window is
-  an acceptable cost for a home-automation notification feature.
-- **`tts.speak` payload**: the brief flags that this API's field names have
-  changed across Home Assistant versions and asks that the exact payload be
-  confirmed via Developer Tools → Actions before hardcoding it. Since that
-  requires a live HA instance this build doesn't have, `ha_client.speak()`
-  ships with the current (2024+) `media_player_entity_id` + `cache` shape
-  and a comment calling out that it needs to be verified against the
-  user's actual HA version before relying on it.
+  `ALERT_TEMP_C` (backend, default 32°C) is intentionally lower than and
+  independent of `EMERGENCY_TEMP_C` (firmware, default 35°C, offline-only
+  physical cutoff) — one is an early-warning response while the network
+  is up, the other is a last-resort floor for when it isn't.
+- **No Home Assistant notification channel - forces fan+AC on directly
+  instead**: the original design spoke a TTS alert via a Google Home
+  speaker (`ha_client.speak()`/`send_alert()`, debounced via
+  `HA_ALERT_DEBOUNCE_SECONDS`) and toggled a separate alert-side-effect
+  switch (`HA_SWITCH_ENTITY`) when `ALERT_TEMP_C` was crossed. With no
+  media/speaker device actually connected, that notification was pure
+  dead weight - removed entirely (`speak()`, `send_alert()`,
+  `toggle_switch()`, `toggle_grow_tent_switch()`, and their config all
+  deleted from `ha_client.py`/`.env.example`). Crossing `ALERT_TEMP_C` now
+  directly forces `fan` and `ac` on in `post_telemetry()`, overriding
+  whatever auto/manual mode or the decision engine just decided for this
+  cycle - a real cooling response instead of a notification nobody could
+  hear. Applied inline (not backgrounded) so fan's forced state reaches
+  the ESP32 in the *same* telemetry response rather than waiting for the
+  next poll; AC still goes through the existing `_sync_ac_to_ha`
+  background push like any other AC state change.
+  - **Not one-way, unlike the firmware's `EMERGENCY_TEMP_C` floor**: this
+    check re-runs every cycle against the live reading, so once
+    temperature drops back below `ALERT_TEMP_C` it simply stops
+    re-forcing fan/AC on - whatever auto/manual mode or the decision
+    engine decides from that point on takes back over. It doesn't
+    proactively turn them back off either, since that's not this
+    feature's job - decide_relay_state()'s own temperature rules already
+    never turn fan/AC off on a temperature drop (only humidity's low
+    branch does), so nothing about this change alters that existing
+    behavior.
 - **AC as a Home-Assistant-only device (no ESP32 relay)**: for a real
   deployment where the AC is itself a Google Home device rather than
   something wired into the relay board, added `ha_client.set_ac()` /
