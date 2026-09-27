@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import logging
 import os
@@ -5,11 +7,12 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
+import auth
 import ha_client
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
@@ -114,6 +117,46 @@ class AppState:
 
 app_state = AppState()
 app = FastAPI(title="Grow Tent Controller")
+
+# Paths the ESP32 firmware itself calls - it sends no Authorization header
+# at all, so these must stay reachable with no credentials.
+PUBLIC_PATHS = {"/api/telemetry"}
+# Safe/read-only HTTP methods a viewer role is allowed to use anywhere else.
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _unauthorized(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={"detail": message},
+        headers={"WWW-Authenticate": 'Basic realm="grow-tent-dashboard"'},
+    )
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Basic "):
+        return _unauthorized("Missing credentials")
+
+    try:
+        decoded = base64.b64decode(auth_header[len("Basic "):]).decode("utf-8")
+        username, _, password = decoded.partition(":")
+    except (binascii.Error, UnicodeDecodeError):
+        return _unauthorized("Malformed credentials")
+
+    user = auth.authenticate(auth.DASHBOARD_USERS, username, password)
+    if user is None:
+        return _unauthorized("Invalid username or password")
+
+    if request.method not in SAFE_METHODS and user.role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Viewer role cannot perform this action"})
+
+    request.state.user = user
+    return await call_next(request)
 
 
 def get_session():
@@ -295,6 +338,15 @@ def get_status():
             exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
         )
+
+
+@app.get("/api/me")
+def get_me(request: Request):
+    """Who the dashboard is currently talking to - lets the frontend show a
+    role badge and lock down admin-only controls for a viewer without
+    guessing from response codes."""
+    user = request.state.user
+    return {"username": user.username, "role": user.role}
 
 
 @app.get("/api/profile")

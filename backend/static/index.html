@@ -528,6 +528,14 @@
   .control-btn.export:hover { border-color: var(--moss); color: #eaf1de; }
   .control-btn.export:disabled { cursor: wait; opacity: 0.6; transform: none; }
 
+  /* viewer role: read-only, every control is visually and functionally inert */
+  body.viewer-role .relay button,
+  body.viewer-role .control-btn,
+  body.viewer-role .segmented button {
+    cursor: not-allowed !important;
+    pointer-events: none;
+  }
+
   .control-pending {
     display: none;
     align-items: center;
@@ -704,6 +712,7 @@
 
   <header>
     <h1>Grow tent control<span class="sub" id="profile-label"></span></h1>
+    <span id="role-badge" class="status-badge" data-state="unknown" style="display: none;"><span class="dot"></span><span class="text"></span></span>
     <span id="conn-badge" class="status-badge" data-state="unreachable"><span class="dot"></span><span class="text">connecting&hellip;</span></span>
   </header>
 
@@ -928,6 +937,7 @@
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
   var currentExhaustScheduleEnabled = false;
+  var currentUserRole = null;
   var lastValues = { temp: null, humidity: null, soil: null };
 
   function fmt(n) {
@@ -980,7 +990,7 @@
 
       btn.textContent = reported ? "on" : "off";
       btn.classList.toggle("on", !!reported);
-      btn.disabled = !manual;
+      btn.disabled = !manual || currentUserRole === "viewer";
 
       var pending = status.reported_relay_state != null && commanded !== reported;
       container.classList.toggle("pending", pending);
@@ -1009,8 +1019,8 @@
 
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", manual);
-    btn.disabled = !manual;
+    btn.classList.toggle("enabled", manual && currentUserRole !== "viewer");
+    btn.disabled = !manual || currentUserRole === "viewer";
 
     var pending = status.reported_relay_state != null && commanded !== reported;
     document.getElementById("ac-pending").classList.toggle("show", pending);
@@ -1028,8 +1038,8 @@
     var reported = light.reported != null ? light.reported : light.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", !light.schedule_enabled);
-    btn.disabled = light.schedule_enabled;
+    btn.classList.toggle("enabled", !light.schedule_enabled && currentUserRole !== "viewer");
+    btn.disabled = light.schedule_enabled || currentUserRole === "viewer";
 
     var pending = light.reported != null && light.commanded !== light.reported;
     document.getElementById("light-pending").classList.toggle("show", pending);
@@ -1038,6 +1048,7 @@
     if (document.activeElement !== select) {
       select.value = String(light.on_hours);
     }
+    select.disabled = currentUserRole === "viewer";
     document.getElementById("light-off-hours").textContent = "off for " + light.off_hours + "h";
   }
 
@@ -1053,8 +1064,8 @@
     var reported = exhaust.reported != null ? exhaust.reported : exhaust.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", !exhaust.schedule_enabled);
-    btn.disabled = exhaust.schedule_enabled;
+    btn.classList.toggle("enabled", !exhaust.schedule_enabled && currentUserRole !== "viewer");
+    btn.disabled = exhaust.schedule_enabled || currentUserRole === "viewer";
 
     var pending = exhaust.reported != null && exhaust.commanded !== exhaust.reported;
     document.getElementById("exhaust-pending").classList.toggle("show", pending);
@@ -1063,11 +1074,45 @@
     if (document.activeElement !== runSelect) {
       runSelect.value = String(exhaust.run_minutes);
     }
+    runSelect.disabled = currentUserRole === "viewer";
     var intervalSelect = document.getElementById("exhaust-interval-minutes");
     if (document.activeElement !== intervalSelect) {
       intervalSelect.value = String(exhaust.interval_minutes);
     }
+    intervalSelect.disabled = currentUserRole === "viewer";
     document.getElementById("exhaust-off-label").textContent = "off for " + exhaust.off_minutes + "m";
+  }
+
+  function loadRole() {
+    fetch("/api/me")
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status " + r.status);
+        return r.json();
+      })
+      .then(function (me) {
+        currentUserRole = me.role;
+        document.body.classList.toggle("viewer-role", currentUserRole === "viewer");
+
+        var badge = document.getElementById("role-badge");
+        badge.style.display = "";
+        badge.dataset.state = currentUserRole === "admin" ? "ok" : "stale";
+        badge.querySelector(".text").textContent = me.username + " · " + currentUserRole;
+
+        if (currentUserRole === "viewer") {
+          // One-time lockdown for controls the poll cycle never touches -
+          // everything else is re-guarded on every applyStatus/applyLightStatus/
+          // applyExhaustStatus call so it can't be re-enabled by a later poll.
+          ["btn-auto", "btn-manual", "light-btn-manual", "light-btn-schedule",
+            "exhaust-btn-manual", "exhaust-btn-schedule", "export-btn"].forEach(function (id) {
+            document.getElementById(id).disabled = true;
+          });
+        }
+      })
+      .catch(function () {
+        // Non-critical for rendering, but every /api/* call will 401 right
+        // behind this one if it failed - the browser's own Basic Auth
+        // prompt is the real gate here.
+      });
   }
 
   function loadProfile() {
@@ -1551,6 +1596,7 @@
       });
   });
 
+  loadRole();
   loadProfile();
   poll();
   setInterval(poll, POLL_MS);

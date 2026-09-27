@@ -226,6 +226,39 @@ pio run --target upload
 | `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
 | `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
+| `GET /api/me` | Dashboard | who's currently authenticated (`username`, `role`) |
+
+## Dashboard access / roles
+
+The dashboard is protected with HTTP Basic Auth - no new dependency, no
+sessions, just `base64`/`secrets` from the standard library, matching the
+single-file/no-build-step/no-CDN dashboard's own minimal-dependency stance.
+Users are declared in the backend's `.env` as a JSON array:
+
+```
+DASHBOARD_USERS=[{"username":"admin","password":"changeme-admin","role":"admin"},{"username":"viewer","password":"changeme-viewer","role":"viewer"}]
+```
+
+Two roles, nothing configurable beyond them:
+
+- **admin** - full control, identical to the pre-auth dashboard.
+- **viewer** - can see everything (`GET` routes: status, history, charts,
+  profile) but every mutating call (`POST /api/mode`, `/api/relay`,
+  `/api/light/*`, `/api/exhaust/*`, `/api/export`) is rejected with `403`.
+  The dashboard UI also disables every button/dropdown for a viewer so
+  there's nothing clickable to try in the first place - but the `403` is
+  enforced server-side regardless of what the browser does.
+
+`POST /api/telemetry` is the one route with no auth at all - the ESP32
+firmware sends no `Authorization` header, so protecting it would just
+break every telemetry post. Everything else, including the dashboard's own
+static files, requires valid credentials.
+
+Passwords are plaintext in `.env`, same trust model as `HA_TOKEN` and every
+other credential already in that file - keep `.env` out of version control.
+If `DASHBOARD_USERS` is missing, empty, or malformed, the dashboard fails
+closed and rejects every request rather than falling back to a shipped
+default login.
 
 ## Home Assistant / Google Home
 

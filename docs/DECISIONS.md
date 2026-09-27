@@ -405,6 +405,75 @@ of silently decided.
   `EXPORT_PATH` on disk as before, so the scheduled background export
   (`_run_export`) and manual/API triggers behave identically either way.
 
+## Dashboard authentication / roles
+
+- **HTTP Basic Auth via a custom `@app.middleware("http")` function, not
+  FastAPI's `HTTPBasic` security class.** Middleware runs at the ASGI level
+  and wraps every request in one place, including the `StaticFiles` mount
+  (`/static`) and the `index()` route serving `index.html` - a
+  `Depends(...)`-based approach would have needed adding to all 13+
+  existing route functions individually and still wouldn't cover the
+  static mount without extra wiring. One function, one place to reason
+  about, matches how `AUTO_REVERT`/offline-detection are also handled as
+  cross-cutting concerns rather than per-route logic.
+- **No new dependency** - `base64`/`secrets` (both standard library) are
+  enough for Basic Auth decode + constant-time comparison. This matches
+  the dashboard's own established stance (single HTML file, no build step,
+  no CDN scripts) - the auth mechanism follows the same "reach for what's
+  already there before adding a package" bias as the rest of the project,
+  rather than pulling in `python-jose`/`passlib`/session middleware for a
+  two-role, no-registration-flow system.
+- **Users live in `.env` as a JSON array** (`DASHBOARD_USERS`), not a DB
+  table - there's no user-management UI, no self-service signup, and the
+  set of people who should have dashboard access changes about as often as
+  `HA_TOKEN` does. A `.env` entry is one line to add/rotate/remove and
+  needs no migration, consistent with every other piece of config in this
+  project living in the environment rather than the database.
+- **Plaintext passwords in `.env`.** Explicitly accepted, not an oversight
+  - it's the same trust model already used for `HA_TOKEN`: whoever can read
+  the backend's `.env` already has full control over the tent (HA access,
+  DB access, the container itself), so hashing dashboard passwords would
+  protect against a threat model (an attacker reading `.env` but not
+  anything else in it) that doesn't hold here. `.env` is gitignored and
+  never leaves the host, same as always.
+- **Fail closed, not fail open.** An empty, unset, or malformed
+  `DASHBOARD_USERS` means `auth.DASHBOARD_USERS` parses to `{}`, and
+  `authenticate()` rejects every login against an empty user map - there is
+  no shipped default admin/admin credential anywhere in code. A typo'd
+  single entry is dropped with a logged warning rather than taking down
+  every other configured user, but a totally broken/missing config takes
+  down the whole dashboard rather than silently granting access.
+- **`POST /api/telemetry` is the one unauthenticated route**, carved out by
+  path in the middleware before any auth check runs. The ESP32 firmware
+  has no notion of credentials and sends no `Authorization` header at all;
+  requiring auth there would just break every telemetry post with no way
+  for the firmware to satisfy it. Every other route, including the
+  dashboard's own static assets, requires valid Basic Auth.
+- **The GET/HEAD/OPTIONS vs. everything-else boundary is the entire role
+  check** - a viewer can call any read-only endpoint (status, history,
+  charts, profile, `/api/me`) but gets a flat `403` from the middleware on
+  any other HTTP method, before the request even reaches the route
+  handler. This means the boundary is enforced once, centrally, rather
+  than needing every mutating endpoint to remember to check
+  `request.state.user.role == "admin"` itself - a new `POST` route added
+  later is protected automatically just by not being in `PUBLIC_PATHS`,
+  with no route-level code required.
+- **The dashboard UI's viewer lockdown (disabled buttons, a role badge, a
+  `body.viewer-role` CSS rule making every control visually and
+  `pointer-events: none`-inert) is a UX courtesy, not the actual
+  boundary.** `GET /api/me` tells the frontend which role it's showing
+  controls for, but the real enforcement is the 403 above - a viewer
+  opening devtools and firing a raw `fetch()` at `/api/relay` still gets
+  rejected server-side (verified live: a viewer's direct `POST
+  /api/relay` returns `403` even with the button disabled and hidden
+  behind `pointer-events: none`).
+- **Timing-safe comparison, including for unknown usernames.**
+  `auth.authenticate()` always runs `secrets.compare_digest()` against
+  *some* password - a real one for a known username, an empty string for
+  an unknown one - so a wrong password and a wrong username take
+  indistinguishable time. Without this, response timing could leak which
+  usernames in `DASHBOARD_USERS` actually exist.
+
 ## Frontend
 
 - **No external font/CDN dependency**: used the system monospace/sans font
