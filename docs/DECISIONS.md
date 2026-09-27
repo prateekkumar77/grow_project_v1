@@ -473,6 +473,19 @@ of silently decided.
   an unknown one - so a wrong password and a wrong username take
   indistinguishable time. Without this, response timing could leak which
   usernames in `DASHBOARD_USERS` actually exist.
+- **No session/expiry mechanism, accepted as part of choosing Basic Auth.**
+  There's no session token, cookie, or timer anywhere in `auth.py` or the
+  middleware - every request is authenticated independently against
+  `DASHBOARD_USERS`, every time. "Staying logged in" is entirely the
+  browser's own credential cache for the origin, which this app has no
+  visibility into or control over: no server-enforced re-login interval,
+  and no logout endpoint could force it either (there's no session to
+  invalidate). Rotating a password in `DASHBOARD_USERS` takes effect
+  immediately on the next request either way, so it's not a security gap
+  the way a stale session token would be - it's a UX tradeoff, made
+  consciously to keep this dependency-free rather than add cookie/token
+  session handling for a two-role dashboard with no self-service login
+  flow.
 
 ## Frontend
 

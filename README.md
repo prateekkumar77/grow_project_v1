@@ -260,6 +260,15 @@ If `DASHBOARD_USERS` is missing, empty, or malformed, the dashboard fails
 closed and rejects every request rather than falling back to a shipped
 default login.
 
+**No session timeout.** Basic Auth is stateless - the backend checks
+credentials on every request and never issues or tracks a session, so
+there's nothing here that expires like `AUTO_REVERT_MINUTES` does for
+manual mode. Staying "logged in" is purely the browser caching your
+credentials for this origin and resending them automatically; how long
+that lasts (until the browser/tab closes, site data is cleared, etc.) is
+up to the browser, not this app. There's also no working "log out" button
+possible under Basic Auth - only the browser can drop cached credentials.
+
 ## Home Assistant / Google Home
 
 Fan, exhaust, pump, and light are physical ESP32 relays. **AC is the one
