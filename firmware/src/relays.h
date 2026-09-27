@@ -2,7 +2,7 @@
 
 struct RelayState {
   bool fan;
-  bool ac;
+  bool exhaust;
   bool pump;
   bool light;
 };
@@ -18,9 +18,9 @@ class RelayController {
 
   // Apply a backend- or dashboard-commanded state. Subject to the pump
   // cap/cooldown safety check below - a commanded pump-on can be refused.
-  // fan/ac/light apply unconditionally; there is no local logic for them
-  // beyond the emergency temperature floor in tick().
-  void applyCommand(bool fan, bool ac, bool pump, bool light);
+  // fan/exhaust/light apply unconditionally; there is no local logic for
+  // them beyond the emergency temperature floor in tick().
+  void applyCommand(bool fan, bool exhaust, bool pump, bool light);
 
   // Must be called frequently (every loop iteration). Enforces, in order:
   //   1. Pump max-run cutoff + cooldown arming.
@@ -32,17 +32,17 @@ class RelayController {
   // pump regardless of cap/cooldown state.
   void forcePumpOff();
 
-  RelayState getState() const { return {_fan, _ac, _pump, _light}; }
+  RelayState getState() const { return {_fan, _exhaust, _pump, _light}; }
 
  private:
   void setFan(bool on);
-  void setAc(bool on);
+  void setExhaust(bool on);
   void setPump(bool on);
   void setLight(bool on);
   void writePin(int pin, bool on);
 
   bool _fan = false;
-  bool _ac = false;
+  bool _exhaust = false;
   bool _pump = false;
   bool _light = false;
 

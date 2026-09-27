@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel
 
 class RelayState(BaseModel):
     fan: bool = False
-    ac: bool = False
+    exhaust: bool = False
     pump: bool = False
     # Grow light. Has its own ESP32 relay like fan/pump, but is never
     # touched by decide_relay_state() or the auto/manual environmental
@@ -43,7 +43,7 @@ class ModeIn(BaseModel):
 
 
 class RelayIn(BaseModel):
-    relay: Literal["fan", "ac", "pump"]
+    relay: Literal["fan", "exhaust", "pump"]
     state: bool
 
 
@@ -103,6 +103,6 @@ class ReadingRow(SQLModel, table=True):
     # reported state (physical truth), not the commanded one - matches
     # how the dashboard treats "reported" as ground truth elsewhere.
     light_state: bool
-    reported_relay_state: str  # JSON: {"fan": bool, "ac": bool, "pump": bool, "light": bool}
+    reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str

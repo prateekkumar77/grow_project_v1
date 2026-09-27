@@ -39,13 +39,13 @@ working as those conditions drift without needing new code.
 On top of that baseline comparison, three independent rule groups run
 every cycle and combine into one relay command:
 
-1. **Humidity** — rising humidity escalates straight to the AC (it pulls
-   in cooler, drier air, addressing both variables at once). Unusually low
-   humidity does the opposite: AC off, fan on, to pull in comparatively
-   humid room air instead.
+1. **Humidity** — rising humidity escalates straight to the exhaust (it
+   vents the tent's humid air out, addressing both variables at once).
+   Unusually low humidity does the opposite: exhaust off, fan on, to pull
+   in comparatively humid room air instead.
 2. **Temperature** — an escalation ladder rather than a single on/off.
    A moderate rise above baseline tries the fan alone first (cheap, lower
-   disturbance); only a larger or sustained rise escalates to the AC.
+   disturbance); only a larger or sustained rise escalates to the exhaust.
    This avoids running the more disruptive/expensive intervention for
    fluctuations the fan alone can handle.
 3. **Soil moisture** — a threshold with hysteresis: the pump turns on
@@ -68,8 +68,8 @@ these form the "grow profile" for whatever's in the tent:
 
 | Variable | Governs |
 |---|---|
-| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when AC-on / fan-on-AC-off kicks in for humidity |
-| `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_AC_THRESHOLD_C` | how far above baseline before fan, then AC, engage |
+| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when exhaust-on / fan-on-exhaust-off kicks in for humidity |
+| `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_EXHAUST_THRESHOLD_C` | how far above baseline before fan, then exhaust, engage |
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `BASELINE_WINDOW_MINUTES` | how far back the rolling baseline looks |
 | `ALERT_TEMP_C` | when the backend pushes a Home Assistant alert |
@@ -106,10 +106,8 @@ states, switched from the dashboard:
 
 The schedule toggle is the master switch: `POST /api/light/manual` is
 rejected with `409` while the schedule is on, the same way `/api/relay`
-rejects a manual fan/AC/pump command outside manual mode. See
-`docs/automation-logic.md` for the full behavior and
-`docs/DECISIONS.md` for why it's a separate relay rather than reusing the
-AC's now-unused one.
+rejects a manual fan/exhaust/pump command outside manual mode. See
+`docs/automation-logic.md` for the full behavior.
 
 ## History charts
 
@@ -197,18 +195,21 @@ pio run --target upload
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
 | `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |
 | `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
-| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light) |
+| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/exhaust/pump, not light) |
 | `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
 | `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
 
 ## Home Assistant / Google Home
 
-`backend/ha_client.py` calls Home Assistant's REST API to toggle a
-Google Home-linked smart plug and to announce alerts via a Google Home
-speaker (`tts.speak`), debounced so the same alert type doesn't repeat
-more than once every `HA_ALERT_DEBOUNCE_SECONDS`. A Home Assistant outage
-never blocks or breaks `/api/telemetry` — failures are logged and ignored.
+Fan, exhaust, pump, and light are all physical ESP32 relays — Home
+Assistant isn't involved in controlling any of them. It's used purely for
+notifications: `backend/ha_client.py` calls Home Assistant's REST API to
+toggle an alert-side-effect switch and to announce alerts via a Google
+Home speaker (`tts.speak`), debounced so the same alert type doesn't
+repeat more than once every `HA_ALERT_DEBOUNCE_SECONDS`. A Home Assistant
+outage never blocks or breaks `/api/telemetry` — failures are logged and
+ignored.
 
 Confirm the exact `tts.speak` payload against your own Home Assistant
 version via Developer Tools → Actions before relying on it in production;
@@ -216,31 +217,12 @@ see `docs/DECISIONS.md` for why.
 
 The backend never talks to Google directly — it only ever calls Home
 Assistant's REST API over the local network; HA is what actually reaches
-your Google Home devices (Cast for speakers, whatever integration matches
-your smart plug/AC for switches).
+your Google Home speaker (Cast) for the spoken alert.
 
-### AC as a Google Home device (no physical relay)
-
-If your AC is a Google Home device (smart plug or native smart AC) rather
-than something wired to the ESP32's relay board, the backend can drive it
-entirely through Home Assistant instead: set `HA_AC_ENTITY` to its entity
-ID and `HA_AC_DOMAIN` to `switch` (smart plug) or `climate` (native smart
-AC). The decision engine's `ac` output is pushed to that entity via
-`ha_client.set_ac()` whenever it changes — automatically after each
-`/api/telemetry` cycle in auto mode, or immediately on a manual
-`/api/relay` toggle, since there's no ESP32 relay for a manual command to
-reach otherwise.
-
-One consequence: the firmware's offline emergency-temperature floor
-(`EMERGENCY_TEMP_C`) can only drive a physical relay, so it no longer
-protects the AC specifically if it has no relay — only the fan still has
-that offline backstop. See `docs/automation-logic.md` and
-`docs/DECISIONS.md` for the full reasoning.
-
-Because of that dependency, the dashboard puts AC control in its own
-"home assistant" panel, separate from the ESP32 relay tiles, with a live
-badge showing whether Home Assistant is actually reachable right now.
-That check runs on its own background schedule
-(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) against Home Assistant's
-own `GET /api/` health endpoint — never inline with a request — so a
-slow or hanging Home Assistant can't add latency to a dashboard load.
+The dashboard shows a live "is Home Assistant actually reachable right
+now" badge in its own panel, since alerts silently doing nothing if HA is
+down would otherwise go unnoticed. That check runs on its own background
+schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) against Home
+Assistant's own `GET /api/` health endpoint — never inline with a
+request — so a slow or hanging Home Assistant can't add latency to a
+dashboard load.

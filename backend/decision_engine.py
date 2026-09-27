@@ -18,7 +18,7 @@ HUMIDITY_HIGH_THRESHOLD = float(os.getenv("HUMIDITY_HIGH_THRESHOLD", "65"))
 HUMIDITY_LOW_THRESHOLD = float(os.getenv("HUMIDITY_LOW_THRESHOLD", "40"))
 
 TEMP_RISE_FAN_THRESHOLD_C = float(os.getenv("TEMP_RISE_FAN_THRESHOLD_C", "2.0"))
-TEMP_RISE_AC_THRESHOLD_C = float(os.getenv("TEMP_RISE_AC_THRESHOLD_C", "3.0"))
+TEMP_RISE_EXHAUST_THRESHOLD_C = float(os.getenv("TEMP_RISE_EXHAUST_THRESHOLD_C", "3.0"))
 
 SOIL_MOISTURE_LOW_THRESHOLD = float(os.getenv("SOIL_MOISTURE_LOW_THRESHOLD", "35"))
 # Pump switches back off only once soil moisture clears the low threshold by
@@ -37,28 +37,28 @@ class Reading:
 
 def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelayState:
     fan = previous_state.fan
-    ac = previous_state.ac
+    exhaust = previous_state.exhaust
     pump = previous_state.pump
 
     temp_delta = reading.temp_c - reading.baseline_temp_c
 
     # --- humidity ------------------------------------------------------------
     if reading.humidity >= HUMIDITY_HIGH_THRESHOLD:
-        # Rising humidity -> AC brings it down.
-        ac = True
+        # Rising humidity -> vent it out via the exhaust.
+        exhaust = True
     elif reading.humidity <= HUMIDITY_LOW_THRESHOLD:
-        # Unusually low humidity (rare) -> AC off, fan pulls in (more humid)
-        # room air instead.
-        ac = False
+        # Unusually low humidity (rare) -> exhaust off, fan pulls in (more
+        # humid) room air instead.
+        exhaust = False
         fan = True
 
     # --- temperature -----------------------------------------------------------
-    if temp_delta >= TEMP_RISE_AC_THRESHOLD_C:
-        # Larger/sustained rise -> escalate to AC (lowers temp and humidity
-        # together).
-        ac = True
+    if temp_delta >= TEMP_RISE_EXHAUST_THRESHOLD_C:
+        # Larger/sustained rise -> escalate to the exhaust (pulls hot,
+        # humid tent air out rather than just circulating it).
+        exhaust = True
     elif temp_delta >= TEMP_RISE_FAN_THRESHOLD_C:
-        # Moderate rise -> fan alone first, not AC.
+        # Moderate rise -> fan alone first, not exhaust.
         fan = True
 
     # --- soil moisture / pump ---------------------------------------------------
@@ -68,4 +68,4 @@ def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelaySta
         pump = False
     # else: within the hysteresis band - hold whatever the pump was doing.
 
-    return RelayState(fan=fan, ac=ac, pump=pump)
+    return RelayState(fan=fan, exhaust=exhaust, pump=pump)

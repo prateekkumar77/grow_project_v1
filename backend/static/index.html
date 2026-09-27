@@ -385,7 +385,7 @@
 
   .relays {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 14px;
   }
 
@@ -465,7 +465,7 @@
   .relay.pending { border-color: rgba(224, 164, 88, 0.45); }
 
   /* Generic "single control with a pending state" row, shared by the
-     light panel and the Home Assistant/AC panel. */
+     light panel and the export panel. */
   .control-row {
     display: flex;
     flex-wrap: wrap;
@@ -498,16 +498,6 @@
     border-color: var(--amber);
     background: linear-gradient(135deg, rgba(226, 149, 79, 0.3), rgba(226, 149, 79, 0.1));
     box-shadow: 0 0 16px -4px rgba(226, 149, 79, 0.4);
-  }
-
-  /* AC's "on" accent is teal (Home Assistant / external integration)
-     rather than amber (used for the light, a direct local relay) - a
-     deliberate visual cue that this control takes a different path. */
-  .control-btn.on.ac {
-    color: #d7f0ec;
-    border-color: var(--teal);
-    background: linear-gradient(135deg, rgba(107, 180, 168, 0.3), rgba(107, 180, 168, 0.1));
-    box-shadow: 0 0 16px -4px rgba(107, 180, 168, 0.4);
   }
 
   .control-btn.enabled {
@@ -769,6 +759,11 @@
           <button>off</button>
           <div class="pending"><span class="blip"></span>pending&hellip;</div>
         </div>
+        <div class="relay" id="relay-exhaust" data-relay="exhaust">
+          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8l4-4 4 4"/><path d="M12 4v11"/><path d="M4 19h16"/><path d="M4 15h16"/></svg>exhaust</div>
+          <button>off</button>
+          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+        </div>
         <div class="relay" id="relay-pump" data-relay="pump">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
           <button>off</button>
@@ -813,13 +808,8 @@
       home assistant
       <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
     </div>
-
-    <div class="control-row">
-      <div class="control-status">
-        <button class="control-btn ac" id="ac-btn">off</button>
-        <div class="control-pending" id="ac-pending"><span class="blip"></span>pending&hellip;</div>
-      </div>
-      <span class="meta">ac &middot; via Home Assistant, not a local relay</span>
+    <div class="row">
+      <span class="meta">used for temperature alerts, spoken via a Google Home speaker</span>
     </div>
   </div>
 
@@ -886,7 +876,7 @@
 <script>
 (function () {
   var POLL_MS = 5000;
-  var relays = ["fan", "pump"];
+  var relays = ["fan", "exhaust", "pump"];
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
   var lastValues = { temp: null, humidity: null, soil: null };
@@ -952,28 +942,15 @@
     setBadge("conn-badge", status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
 
     applyLightStatus(status.light);
-    applyAcAndHaStatus(status);
+    applyHaStatus(status.ha);
     renderLightPie(status.light);
   }
 
-  function applyAcAndHaStatus(status) {
-    var ha = status.ha || {};
+  function applyHaStatus(ha) {
+    ha = ha || {};
     var haState = ha.reachable === true ? "ok" : ha.reachable === false ? "unreachable" : "unknown";
     var haText = haState === "ok" ? "connected" : haState === "unreachable" ? "unreachable" : "checking…";
     setBadge("ha-badge", haState, haText);
-
-    var manual = status.mode === "manual";
-    var btn = document.getElementById("ac-btn");
-    var commanded = status.commanded_relay_state ? status.commanded_relay_state.ac : false;
-    var reported = status.reported_relay_state ? status.reported_relay_state.ac : commanded;
-
-    btn.textContent = reported ? "on" : "off";
-    btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", manual);
-    btn.disabled = !manual;
-
-    var pending = status.reported_relay_state != null && commanded !== reported;
-    document.getElementById("ac-pending").classList.toggle("show", pending);
   }
 
   function applyLightStatus(light) {
@@ -1061,16 +1038,6 @@
         body: JSON.stringify({ relay: name, state: turningOn }),
       }).then(poll);
     });
-  });
-
-  document.getElementById("ac-btn").addEventListener("click", function (e) {
-    if (currentMode !== "manual") return;
-    var turningOn = !e.currentTarget.classList.contains("on");
-    fetch("/api/relay", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relay: "ac", state: turningOn }),
-    }).then(poll);
   });
 
   (function populateLightHourOptions() {
