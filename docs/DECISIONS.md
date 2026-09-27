@@ -26,12 +26,18 @@ of silently decided.
   true every cycle" implied some form of stable on/off state rather than a
   bare `<` comparison.
 - **Humidity/temperature rule interaction**: both the humidity and
-  temperature blocks can independently set `exhaust`/`ac` (always
-  together) and `fan`; they're applied in sequence (humidity first, then
-  temperature) so either one escalating is sufficient, and neither block
-  turns off what the other just turned on within the same call (e.g. a
-  temperature-driven "hold" doesn't undo a humidity-driven exhaust/AC-on
-  in the same reading).
+  temperature blocks can independently set `ac`/`fan`; they're applied in
+  sequence (humidity first, then temperature) so either one turning AC on
+  is sufficient, and neither block turns off what the other just turned on
+  within the same call (e.g. a temperature-driven "hold" doesn't undo a
+  humidity-driven AC-on in the same reading).
+- **Exhaust is deliberately excluded from this function entirely**: an
+  earlier revision added exhaust as a fourth output here, escalating
+  alongside AC on the same humidity/temperature triggers. That was
+  reverted - exhaust is now driven only by its own run/interval duty-cycle
+  schedule (`exhaust_schedule.is_exhaust_on()`, see "Exhaust schedule"
+  below), the same "own schedule, never a sensor" treatment light already
+  gets. No humidity or temperature reading turns exhaust on or off.
 
 ## Pump safety (firmware)
 
@@ -91,20 +97,11 @@ of silently decided.
   ships with the current (2024+) `media_player_entity_id` + `cache` shape
   and a comment calling out that it needs to be verified against the
   user's actual HA version before relying on it.
-- **Exhaust is a new, separate physical relay - AC keeps its existing
-  Home-Assistant-only design**: a physical exhaust fan was added
-  alongside AC rather than replacing it. Both escalate together on the
-  same humidity/temperature triggers in `decide_relay_state()` (exhaust
-  vents locally, AC actively conditions the air), but they're driven
-  completely differently: exhaust is `RELAY_EXHAUST_PIN` on the ESP32,
-  polled and applied every telemetry cycle exactly like fan/pump; AC has
-  no ESP32 pin at all and is pushed to Home Assistant via
-  `ha_client.set_ac()`. An earlier pass briefly renamed `ac` to
-  `exhaust` and removed the Home Assistant integration entirely,
-  mistaking "add a physical exhaust relay" for "replace AC with a
-  physical relay" - reverted once clarified that AC's Home
-  Assistant-only setup was meant to stay exactly as it was, alongside the
-  new exhaust relay, not instead of it.
+- **AC as a Home-Assistant-only device (no ESP32 relay)**: for a real
+  deployment where the AC is itself a Google Home device rather than
+  something wired into the relay board, added `ha_client.set_ac()` /
+  `HA_AC_ENTITY` / `HA_AC_DOMAIN` and had the backend push AC state to HA
+  directly instead of via the ESP32. Specific choices:
   - **Configurable domain** (`HA_AC_DOMAIN`, default `switch`): an AC on a
     smart plug is a `switch.*` entity; a native smart AC/mini-split is
     usually `climate.*`. Rather than guess which one a given user has,
@@ -117,11 +114,11 @@ of silently decided.
     ~5s HTTP timeout, risking a telemetry POST timing out on the ESP32
     side purely because HA was slow, which would then trip the firmware's
     "POST failed → force pump off" safety path for an unrelated reason.
-  - **`/api/relay` pushes AC changes immediately**: fan/exhaust/pump
-    manual commands rely on the ESP32 polling `commanded_relay_state` on
-    its next cycle, but there's no ESP32 relay for AC to poll into.
-    Without an immediate push, a manual AC toggle from the dashboard
-    would silently do nothing until the next telemetry cycle (up to
+  - **`/api/relay` pushes AC changes immediately**: fan/pump manual
+    commands rely on the ESP32 polling `commanded_relay_state` on its next
+    cycle, but there's no ESP32 relay for AC to poll into. Without an
+    immediate push, a manual AC toggle from the dashboard would silently
+    do nothing until the next telemetry cycle (up to
     `TELEMETRY_INTERVAL_MS`, default 20s) coincidentally re-synced it.
   - **`/api/status` reports HA-confirmed state, not the ESP32's**: the
     ESP32 has no `ac` relay pin to report a real value for at all.
@@ -133,11 +130,11 @@ of silently decided.
     on a successful HA call, so a failed push (HA temporarily down) gets
     retried on the next telemetry cycle rather than silently drifting out
     of sync.
-  - **Trade-off, called out in `docs/automation-logic.md`**: AC loses the
-    firmware's offline emergency-temperature floor, since that floor can
-    only drive a physical relay - exhaust gets it, AC doesn't. This is
-    inherent to AC being an HA-only device, not something this change
-    could route around - documented rather than silently accepted.
+  - **Trade-off, called out in `docs/automation-logic.md`**: the AC loses
+    the firmware's offline emergency-temperature floor, since that floor
+    can only drive a physical relay. This is inherent to the AC being an
+    HA-only device, not something this change could route around -
+    documented rather than silently accepted.
 - **HA reachability is a background poll, not an inline check**: `GET
   /api/status` is polled every 5s by the dashboard, and `/api/telemetry`
   has the ESP32 waiting on its response with a firmware-side timeout of
@@ -165,11 +162,11 @@ of silently decided.
 - **A fourth, independent ESP32 relay, not folded into the auto/manual
   relays**: the light gets its own `RELAY_LIGHT_PIN` (firmware) and its
   own `light` field on `RelayState`, entirely separate from
-  fan/exhaust/ac/pump. It is never passed to `decide_relay_state()` and
-  is not gated by the environmental `mode` at all - the requirement was
-  explicit that light "will not be affected by auto mode." A dedicated
-  relay channel keeps the light fully independent of the other outputs,
-  which are all decided together by the same function.
+  fan/ac/pump. It is never passed to `decide_relay_state()` and is not
+  gated by the environmental `mode` at all - the requirement was explicit
+  that light "will not be affected by auto mode." A dedicated relay
+  channel keeps the light fully independent of the other outputs, which
+  are all decided together by the same function.
 - **Schedule anchored to UTC midnight, not to when it was enabled**: the
   brief describes a duration ("18 on / 6 off"), not a specific start
   time, so `is_light_on(now_utc, on_hours)` is a pure function of the
@@ -196,7 +193,7 @@ of silently decided.
   even while the schedule is off (so it's ready the instant it's turned
   on). `POST /api/light/manual` is rejected with `409` while the schedule
   is enabled, deliberately mirroring how `/api/relay` already rejects a
-  manual fan/exhaust/ac/pump command outside manual mode - one consistent
+  manual fan/ac/pump command outside manual mode - one consistent
   pattern for "who owns this relay right now" across the whole app,
   rather than inventing a second one for light.
 - **No auto-revert for manual light control**: unlike the environmental
@@ -236,6 +233,44 @@ of silently decided.
     `data/grow.db` would lose all historical readings, not just the new
     column - too large a cost for a one-column addition when the fix is
     one SQL statement.
+
+## Exhaust schedule
+
+- **Removed from `decide_relay_state()` entirely, given a schedule
+  instead**: exhaust briefly went through two other designs first (a
+  physical relay escalating alongside AC on humidity/temperature, then a
+  physical relay replacing AC's Home-Assistant control outright) before
+  landing here: exhaust is never touched by sensor readings, auto/manual
+  `mode`, or `decide_relay_state()` at all. It's structurally identical to
+  the light - its own relay, its own schedule/manual master switch - just
+  with a different schedule *shape* (see next bullet).
+- **Run/interval duty cycle, not an on_hours window**: light's schedule
+  fits a once-a-day photoperiod; exhaust ventilation calls for a much
+  higher-frequency repeating cycle (e.g. "1 minute every 5"), so
+  `exhaust_schedule.is_exhaust_on()` takes `run_minutes` and
+  `interval_minutes` (both 1-60 via dashboard dropdowns) instead of a
+  single `on_hours`. Anchored to 00:00 UTC exactly like the light
+  schedule, for the same reason: a pure function of wall-clock time needs
+  no stored "next toggle" state and is correct immediately after a
+  backend restart.
+- **`run_minutes` cannot exceed `interval_minutes`**: unlike light (where
+  `off_hours` is always `24 - on_hours`, computed rather than a second
+  user input, so no invalid combination is possible), exhaust takes two
+  independent user inputs. Running longer than the cycle itself is
+  meaningless, so `ExhaustScheduleIn` rejects that combination with a
+  `422` via a pydantic model validator rather than silently clamping it.
+- **`off_minutes` is a computed response field, not a third input**: same
+  reasoning as light's `off_hours` - `interval_minutes - run_minutes` is
+  always derivable, so making it a separate settable field would just
+  invite it to disagree with the other two.
+- **Endpoints and behavior mirror `/api/light/schedule` and
+  `/api/light/manual` exactly**: `POST /api/exhaust/schedule` combines
+  `enabled` + `run_minutes` + `interval_minutes` into one call (values
+  saved even while the schedule is off, so they're ready the instant it's
+  turned on); `POST /api/exhaust/manual` is rejected with `409` while the
+  schedule is enabled. Reusing the exact same pattern rather than
+  inventing a different shape for exhaust keeps "who owns this relay
+  right now" consistent across every schedule-driven relay in the app.
 
 ## History charts
 
@@ -363,14 +398,22 @@ of silently decided.
   segmented control needs its own scoped rule for the same reason - the
   shared `.segmented`/`.segmented-thumb` base styling is fine to reuse,
   the position/color override per state is not.
-- **Exhaust joined the relay grid; AC keeps its own "home assistant"
-  panel**: exhaust is a normal physical relay, so it's a tile in
-  `.relays` alongside fan and pump (which grew from 2 to 3 columns) - the
-  same treatment fan/pump already get. AC stays visually separate in its
-  own panel, unchanged from before: it's still not the same kind of thing
-  as a local relay, and still depends entirely on Home Assistant being
-  reachable, so it keeps its own section with the live reachability badge
-  rather than blending into the grid.
+- **Exhaust got its own panel, structured like the light panel, not a
+  tile in `.relays`**: exhaust briefly sat as a plain on/off tile
+  alongside fan/pump (`.relays` grew to 3 columns for it), back when it
+  was a sensor-driven physical relay like fan/pump. Once it became
+  schedule-driven instead, that no longer fit - a bare on/off tile has
+  nowhere to put a schedule/manual toggle or the run/interval dropdowns.
+  `.relays` reverted to 2 columns (fan, pump), and exhaust got its own
+  panel reusing the exact same `.control-btn`/`.control-row`/
+  `.schedule-controls` markup the light panel already uses, generalized
+  from `.light-schedule-controls` to `.schedule-controls` so both panels
+  share one class instead of duplicating near-identical CSS.
+  AC keeps its own separate "home assistant" panel throughout all of
+  this, unchanged: it's still not the same kind of thing as a local
+  relay, and still depends entirely on Home Assistant being reachable, so
+  it keeps its own section with the live reachability badge rather than
+  blending into either the relay grid or the schedule panels.
 - **AC's "on" accent is teal, not the green/amber used elsewhere**: every
   other "on" state (fan, exhaust, pump, light) uses green or amber, so AC
   needed its own color to read as visually distinct at a glance - reusing

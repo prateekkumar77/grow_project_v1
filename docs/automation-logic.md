@@ -5,14 +5,15 @@ ESP32 never makes environmental decisions itself — it only reports sensor
 readings and its actual relay states, and applies whatever the backend
 tells it to do.
 
-Everything from here down through "Manual mode" covers **fan, exhaust,
-AC, and pump** — the four outputs `backend/decision_engine.py` actually
-decides, and only while the system is in **auto** mode. Fan, exhaust, and
-pump are physical ESP32 relays; AC has no relay at all and is driven
-through Home Assistant instead (see "AC: no physical relay" below). The
-**light** is covered separately, further below, because it isn't part of
-any of that: it has its own schedule and is never touched by
-`decide_relay_state()` or by auto/manual mode at all.
+Everything from here down through "Manual mode" covers **fan, AC, and
+pump** — the three outputs `backend/decision_engine.py` actually decides,
+and only while the system is in **auto** mode. Fan and pump are physical
+ESP32 relays; AC has no relay at all and is driven through Home Assistant
+instead (see "AC: no physical relay" below). **Light and exhaust** are
+covered separately, further below, because neither is part of any of
+that: each has its own schedule and is never touched by
+`decide_relay_state()`, by auto/manual mode, or by any sensor reading at
+all.
 
 ## What gets measured
 
@@ -26,26 +27,24 @@ any of that: it has its own schedule and is never touched by
 ## Humidity rules
 
 - **Humidity climbing at or above `HUMIDITY_HIGH_THRESHOLD`** (default 65%):
-  turn **exhaust and AC on together**. Exhaust vents the tent's humid air
-  out locally; AC actively conditions the air via Home Assistant. Both
-  escalate on the same trigger rather than one standing in for the other.
+  turn the **AC** on. The AC pulls in drier, cooler conditioned air, which
+  brings both temperature and humidity down together.
 - **Humidity dropping at or below `HUMIDITY_LOW_THRESHOLD`** (default 40%,
-  expected to be rare with no active ventilation): turn **exhaust and AC
-  off** and the **fan on**, so the tent pulls in room air instead — the
-  room is normally more humid than the tent, so this raises humidity back
-  up without needing a humidifier.
+  expected to be rare with no active ventilation): turn the **AC off** and
+  the **fan on**, so the tent pulls in room air instead — the room is
+  normally more humid than the tent, so this raises humidity back up
+  without needing a humidifier.
 
 ## Temperature rules
 
 Measured as a rise above the rolling baseline:
 
-- **A moderate rise** (`TEMP_RISE_FAN_THRESHOLD_C` to `TEMP_RISE_EXHAUST_THRESHOLD_C`,
+- **A moderate rise** (`TEMP_RISE_FAN_THRESHOLD_C` to `TEMP_RISE_AC_THRESHOLD_C`,
   default 2–3°C): turn the **fan on alone**. Air movement alone is often
   enough to knock a couple of degrees off without pulling in outside air.
-- **A larger or sustained rise** (at or above `TEMP_RISE_EXHAUST_THRESHOLD_C`,
-  default 3°C): **escalate to exhaust and AC together**, which handles
-  both temperature and humidity at once rather than relying on air
-  movement alone.
+- **A larger or sustained rise** (at or above `TEMP_RISE_AC_THRESHOLD_C`,
+  default 3°C): **escalate to AC**, which handles both temperature and
+  humidity at once rather than relying on air movement alone.
 
 ## Soil moisture / watering
 
@@ -64,14 +63,13 @@ Measured as a rise above the rolling baseline:
 
 ## AC: no physical relay, controlled via Home Assistant
 
-Unlike fan, exhaust, and pump, the AC in this deployment is a Google Home
-device (a smart plug or native smart AC/mini-split), not something wired
-to an ESP32 relay. The decision engine's `ac` output escalates in
-lockstep with `exhaust` (same triggers, same section above) - what
-differs is how it gets applied:
+Unlike fan and pump, the AC in this deployment is a Google Home device
+(a smart plug or native smart AC/mini-split), not something wired to an
+ESP32 relay. The decision engine's `ac` output is the same either way —
+what differs is how it gets applied:
 
-- **Fan / exhaust / pump**: the ESP32 polls its commanded state on every
-  telemetry cycle and drives the physical relay itself.
+- **Fan / pump**: the ESP32 polls its commanded state on every telemetry
+  cycle and drives the physical relay itself.
 - **AC**: the backend pushes the state directly to Home Assistant
   (`ha_client.set_ac()`, entity configured via `HA_AC_ENTITY`/
   `HA_AC_DOMAIN`) whenever it changes — once from `/api/telemetry` in
@@ -86,8 +84,7 @@ differs is how it gets applied:
 This does mean the AC loses the one piece of true offline resilience the
 other relays have: if the network or Home Assistant is down, the AC just
 stays wherever it last was, with no local device watching temperature for
-it - exhaust still gets that offline backstop since it has a real relay
-(see `EMERGENCY_TEMP_C` below), AC does not.
+it. See the note on `EMERGENCY_TEMP_C` below.
 
 Because AC control depends entirely on Home Assistant being reachable,
 the dashboard gives it its own panel, separate from the ESP32 relay tiles,
@@ -134,14 +131,40 @@ of its own, controlled from the dashboard:
 
 The dashboard's schedule toggle is the master switch between these two
 states; attempting a manual command while the schedule is on is rejected
-(`409`), the same way `/api/relay` rejects a manual fan/exhaust/ac/pump
-command outside manual mode.
+(`409`), the same way `/api/relay` rejects a manual fan/ac/pump command
+outside manual mode.
 
 There's no offline-specific logic for the light beyond what every other
 physical relay already gets: it holds its last-commanded state if the
 network drops, same as fan. Unlike fan, though, its schedule keeps
 computing correctly in the background even while offline — it just can't
 reach the ESP32 to apply a change until connectivity returns.
+
+## Exhaust: its own duty-cycle schedule, never sensor-driven
+
+The exhaust fan has its own ESP32 relay too, and follows the exact same
+"own schedule, independent of mode" pattern as the light — but the
+schedule *shape* is different. Rather than one on/off window per day, it's
+a repeating **duty cycle**: on for `run_minutes`, then off for the rest of
+every `interval_minutes` window, cycling continuously (`exhaust_schedule.
+is_exhaust_on()`). Both `run_minutes` and `interval_minutes` are 1-60,
+picked from dashboard dropdowns, and the API rejects `run_minutes` greater
+than `interval_minutes` (`422`) since running longer than the cycle itself
+is meaningless.
+
+- **Schedule on**: `is_exhaust_on()` decides, recomputed fresh every
+  telemetry cycle - same restart-safety property as the light schedule,
+  since it's a pure function of wall-clock time with no stored "next
+  toggle" state.
+- **Schedule off**: the exhaust is under direct manual control from the
+  dashboard (`POST /api/exhaust/manual`) — it just holds whatever it was
+  last set to.
+
+Same master-switch pattern as light: a manual command while the schedule
+is enabled is rejected with `409`. Crucially, **exhaust is never touched
+by `decide_relay_state()`** — no humidity or temperature reading ever
+turns it on or off; only its own schedule or a manual dashboard command
+does.
 
 ## What the firmware does entirely on its own
 

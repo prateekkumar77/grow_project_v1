@@ -353,6 +353,13 @@
     border-color: var(--teal);
   }
 
+  /* exhaust-toggle: manual | schedule - same shape as light-toggle */
+  #exhaust-toggle[data-mode="schedule"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(107, 180, 168, 0.55), rgba(107, 180, 168, 0.3));
+    border-color: var(--teal);
+  }
+
   /* step-toggle: 1h | 30m - thumb shifts right for 30m (2nd button) */
   #step-toggle[data-mode="30"] .segmented-thumb {
     transform: translateX(100%);
@@ -385,7 +392,7 @@
 
   .relays {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 14px;
   }
 
@@ -540,14 +547,14 @@
     animation: pulse-danger 1s infinite;
   }
 
-  .light-schedule-controls {
+  .schedule-controls {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 10px;
   }
 
-  .light-schedule-controls select {
+  .schedule-controls select {
     font-family: var(--font-mono);
     font-size: 13px;
     background: var(--panel-raised);
@@ -558,7 +565,7 @@
     cursor: pointer;
   }
 
-  .light-schedule-controls select:focus { outline: 1px solid var(--border-strong); }
+  .schedule-controls select:focus { outline: 1px solid var(--border-strong); }
 
   .tab-bar {
     display: flex;
@@ -769,11 +776,6 @@
           <button>off</button>
           <div class="pending"><span class="blip"></span>pending&hellip;</div>
         </div>
-        <div class="relay" id="relay-exhaust" data-relay="exhaust">
-          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8l4-4 4 4"/><path d="M12 4v11"/><path d="M4 19h16"/><path d="M4 15h16"/></svg>exhaust</div>
-          <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
-        </div>
         <div class="relay" id="relay-pump" data-relay="pump">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
           <button>off</button>
@@ -804,10 +806,41 @@
     </div>
 
     <div class="row" style="margin-top: 16px;">
-      <div class="light-schedule-controls">
+      <div class="schedule-controls">
         <label class="meta" for="light-on-hours">light on for</label>
         <select id="light-on-hours"></select>
         <span class="meta" id="light-off-hours">off for 6h</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8l4-4 4 4"/><path d="M12 4v11"/><path d="M4 19h16"/><path d="M4 15h16"/></svg>
+      exhaust
+      <span class="meta" style="margin-left: auto; font-weight: 400;">not driven by any sensor</span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn" id="exhaust-manual-btn">off</button>
+        <div class="control-pending" id="exhaust-pending"><span class="blip"></span>pending&hellip;</div>
+      </div>
+
+      <div class="segmented" id="exhaust-toggle" data-mode="manual">
+        <span class="segmented-thumb"></span>
+        <button id="exhaust-btn-manual" class="active">manual</button>
+        <button id="exhaust-btn-schedule">schedule</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 16px;">
+      <div class="schedule-controls">
+        <label class="meta" for="exhaust-run-minutes">run for</label>
+        <select id="exhaust-run-minutes"></select>
+        <label class="meta" for="exhaust-interval-minutes">every</label>
+        <select id="exhaust-interval-minutes"></select>
+        <span class="meta" id="exhaust-off-label">off for 4m</span>
       </div>
     </div>
   </div>
@@ -891,9 +924,10 @@
 <script>
 (function () {
   var POLL_MS = 5000;
-  var relays = ["fan", "exhaust", "pump"];
+  var relays = ["fan", "pump"];
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
+  var currentExhaustScheduleEnabled = false;
   var lastValues = { temp: null, humidity: null, soil: null };
 
   function fmt(n) {
@@ -957,6 +991,7 @@
     setBadge("conn-badge", status.offline ? "stale" : "ok", status.offline ? "sensor offline" : "connected");
 
     applyLightStatus(status.light);
+    applyExhaustStatus(status.exhaust);
     applyAcAndHaStatus(status);
     renderLightPie(status.light);
   }
@@ -1004,6 +1039,35 @@
       select.value = String(light.on_hours);
     }
     document.getElementById("light-off-hours").textContent = "off for " + light.off_hours + "h";
+  }
+
+  function applyExhaustStatus(exhaust) {
+    if (!exhaust) return;
+    currentExhaustScheduleEnabled = exhaust.schedule_enabled;
+
+    document.getElementById("exhaust-toggle").dataset.mode = exhaust.schedule_enabled ? "schedule" : "manual";
+    document.getElementById("exhaust-btn-manual").classList.toggle("active", !exhaust.schedule_enabled);
+    document.getElementById("exhaust-btn-schedule").classList.toggle("active", exhaust.schedule_enabled);
+
+    var btn = document.getElementById("exhaust-manual-btn");
+    var reported = exhaust.reported != null ? exhaust.reported : exhaust.commanded;
+    btn.textContent = reported ? "on" : "off";
+    btn.classList.toggle("on", !!reported);
+    btn.classList.toggle("enabled", !exhaust.schedule_enabled);
+    btn.disabled = exhaust.schedule_enabled;
+
+    var pending = exhaust.reported != null && exhaust.commanded !== exhaust.reported;
+    document.getElementById("exhaust-pending").classList.toggle("show", pending);
+
+    var runSelect = document.getElementById("exhaust-run-minutes");
+    if (document.activeElement !== runSelect) {
+      runSelect.value = String(exhaust.run_minutes);
+    }
+    var intervalSelect = document.getElementById("exhaust-interval-minutes");
+    if (document.activeElement !== intervalSelect) {
+      intervalSelect.value = String(exhaust.interval_minutes);
+    }
+    document.getElementById("exhaust-off-label").textContent = "off for " + exhaust.off_minutes + "m";
   }
 
   function loadProfile() {
@@ -1117,6 +1181,58 @@
 
   document.getElementById("light-on-hours").addEventListener("change", function () {
     postLightSchedule(currentLightScheduleEnabled);
+  });
+
+  (function populateExhaustMinuteOptions() {
+    var runSelect = document.getElementById("exhaust-run-minutes");
+    var intervalSelect = document.getElementById("exhaust-interval-minutes");
+    for (var m = 1; m <= 60; m++) {
+      var runOpt = document.createElement("option");
+      runOpt.value = String(m);
+      runOpt.textContent = m + "m";
+      runSelect.appendChild(runOpt);
+
+      var intervalOpt = document.createElement("option");
+      intervalOpt.value = String(m);
+      intervalOpt.textContent = m + "m";
+      intervalSelect.appendChild(intervalOpt);
+    }
+  })();
+
+  function postExhaustSchedule(enabled) {
+    var runMinutes = parseInt(document.getElementById("exhaust-run-minutes").value, 10);
+    var intervalMinutes = parseInt(document.getElementById("exhaust-interval-minutes").value, 10);
+    fetch("/api/exhaust/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: enabled, run_minutes: runMinutes, interval_minutes: intervalMinutes }),
+    }).then(poll);
+  }
+
+  document.getElementById("exhaust-manual-btn").addEventListener("click", function (e) {
+    if (currentExhaustScheduleEnabled) return;
+    var turningOn = !e.currentTarget.classList.contains("on");
+    fetch("/api/exhaust/manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: turningOn }),
+    }).then(poll);
+  });
+
+  document.getElementById("exhaust-btn-manual").addEventListener("click", function () {
+    postExhaustSchedule(false);
+  });
+
+  document.getElementById("exhaust-btn-schedule").addEventListener("click", function () {
+    postExhaustSchedule(true);
+  });
+
+  document.getElementById("exhaust-run-minutes").addEventListener("change", function () {
+    postExhaustSchedule(currentExhaustScheduleEnabled);
+  });
+
+  document.getElementById("exhaust-interval-minutes").addEventListener("change", function () {
+    postExhaustSchedule(currentExhaustScheduleEnabled);
   });
 
   // --- history tab: charts -------------------------------------------------------------

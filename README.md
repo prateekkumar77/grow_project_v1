@@ -37,18 +37,19 @@ growth stage, and time of day, and a baseline-relative approach keeps
 working as those conditions drift without needing new code.
 
 On top of that baseline comparison, three independent rule groups run
-every cycle and combine into one relay command:
+every cycle and combine into one relay command — **fan, AC, and pump**.
+Exhaust and light are deliberately not part of this: both are driven
+entirely by their own schedules (see below), never by a sensor reading.
 
-1. **Humidity** — rising humidity escalates straight to exhaust + AC
-   together (exhaust vents the tent's humid air out, AC actively
-   conditions the air, addressing both variables at once). Unusually low
-   humidity does the opposite: exhaust and AC off, fan on, to pull in
-   comparatively humid room air instead.
+1. **Humidity** — rising humidity escalates straight to the AC (it pulls
+   in cooler, drier air, addressing both variables at once). Unusually low
+   humidity does the opposite: AC off, fan on, to pull in comparatively
+   humid room air instead.
 2. **Temperature** — an escalation ladder rather than a single on/off.
    A moderate rise above baseline tries the fan alone first (cheap, lower
-   disturbance); only a larger or sustained rise escalates to exhaust +
-   AC together. This avoids running the more disruptive/expensive
-   intervention for fluctuations the fan alone can handle.
+   disturbance); only a larger or sustained rise escalates to the AC.
+   This avoids running the more disruptive/expensive intervention for
+   fluctuations the fan alone can handle.
 3. **Soil moisture** — a threshold with hysteresis: the pump turns on
    below a low-moisture threshold and only turns back off once moisture
    recovers past that threshold *plus a margin*, so it doesn't chatter
@@ -56,10 +57,11 @@ every cycle and combine into one relay command:
    independently with a hard maximum run time and cooldown, so a
    misbehaving backend can never over-water.
 
-All of this only runs in **auto** mode. **Manual** mode bypasses the
-decision engine entirely — relay state is whatever was last commanded from
-the dashboard — and auto-reverts after a period of inactivity so a manual
-session can't be left in control indefinitely by accident.
+All of this only runs in **auto** mode, and only for fan/AC/pump.
+**Manual** mode bypasses the decision engine entirely for those three —
+relay state is whatever was last commanded from the dashboard — and
+auto-reverts after a period of inactivity so a manual session can't be
+left in control indefinitely by accident.
 
 ### Grow profile
 
@@ -69,8 +71,8 @@ these form the "grow profile" for whatever's in the tent:
 
 | Variable | Governs |
 |---|---|
-| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when exhaust+AC-on / fan-on-exhaust+AC-off kicks in for humidity |
-| `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_EXHAUST_THRESHOLD_C` | how far above baseline before fan, then exhaust+AC, engage |
+| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when AC-on / fan-on-AC-off kicks in for humidity |
+| `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_AC_THRESHOLD_C` | how far above baseline before fan, then AC, engage |
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `BASELINE_WINDOW_MINUTES` | how far back the rolling baseline looks |
 | `ALERT_TEMP_C` | when the backend pushes a Home Assistant alert |
@@ -107,8 +109,31 @@ states, switched from the dashboard:
 
 The schedule toggle is the master switch: `POST /api/light/manual` is
 rejected with `409` while the schedule is on, the same way `/api/relay`
-rejects a manual fan/exhaust/ac/pump command outside manual mode. See
+rejects a manual fan/ac/pump command outside manual mode. See
 `docs/automation-logic.md` for the full behavior.
+
+## Exhaust schedule
+
+The exhaust fan has its own ESP32 relay too, and is **never** part of
+`decide_relay_state()` or any sensor-driven decision — it's controlled
+exactly the same shape as the light (a schedule/manual master switch),
+just with a different kind of schedule: instead of one on/off window per
+day, exhaust runs a repeating **duty cycle** — on for `run_minutes`,
+repeating every `interval_minutes` (both 1-60, picked from dashboard
+dropdowns), off for the remainder of each interval. Anchored to 00:00 UTC
+the same way the light schedule is, so it's a pure function of wall-clock
+time with no stored timer to lose on a restart.
+
+- **Schedule on**: `is_exhaust_on()` decides, recomputed every telemetry
+  cycle.
+- **Schedule off**: the exhaust is under direct manual control from the
+  dashboard (`POST /api/exhaust/manual`), holding whatever it was last
+  set to.
+
+Same master-switch pattern as light: `POST /api/exhaust/manual` is
+rejected with `409` while the schedule is enabled, and `run_minutes`
+can't exceed `interval_minutes` (rejected with `422`) since running
+longer than the cycle itself doesn't mean anything.
 
 ## History charts
 
@@ -196,9 +221,11 @@ pio run --target upload
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
 | `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |
 | `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
-| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/exhaust/ac/pump, not light) |
+| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light or exhaust) |
 | `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
 | `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
+| `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
+| `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
 
 ## Home Assistant / Google Home
@@ -207,15 +234,14 @@ Fan, exhaust, pump, and light are physical ESP32 relays. **AC is the one
 exception**: it's a Google Home device (a smart plug or native smart
 AC/mini-split) with no ESP32 relay, driven entirely through Home
 Assistant instead — `backend/ha_client.py` calls Home Assistant's REST
-API to turn it on/off. The decision engine escalates exhaust and AC
-together on the same humidity/temperature rules (see "Methodology"
-above): exhaust vents the tent locally while AC actively conditions the
-air. `ha_client.py` is also used for notifications — toggling an
-alert-side-effect switch and announcing alerts via a Google Home speaker
-(`tts.speak`), debounced so the same alert type doesn't repeat more than
-once every `HA_ALERT_DEBOUNCE_SECONDS`. A Home Assistant outage never
-blocks or breaks `/api/telemetry` — failures are logged and ignored, and
-AC just holds its last state until HA comes back.
+API to turn it on/off, as part of the decision engine's humidity/
+temperature escalation (see "Methodology" above). `ha_client.py` is also
+used for notifications — toggling an alert-side-effect switch and
+announcing alerts via a Google Home speaker (`tts.speak`), debounced so
+the same alert type doesn't repeat more than once every
+`HA_ALERT_DEBOUNCE_SECONDS`. A Home Assistant outage never blocks or
+breaks `/api/telemetry` — failures are logged and ignored, and AC just
+holds its last state until HA comes back.
 
 Confirm the exact `tts.speak` payload against your own Home Assistant
 version via Developer Tools → Actions before relying on it in production;

@@ -14,9 +14,13 @@ import ha_client
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
+from exhaust_schedule import is_exhaust_on
 from excel_export import EXPORT_PATH, export_readings_to_excel
 from light_schedule import is_light_on
 from models import (
+    ExhaustManualIn,
+    ExhaustScheduleIn,
+    ExhaustStatus,
     HaStatus,
     LightManualIn,
     LightScheduleIn,
@@ -56,6 +60,13 @@ TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
 LIGHT_DEFAULT_ON_HOURS = int(os.getenv("LIGHT_DEFAULT_ON_HOURS", "18"))
 LIGHT_SCHEDULE_ENABLED_DEFAULT = os.getenv("LIGHT_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
 
+# Exhaust schedule defaults - same "starts off" rationale as the light
+# schedule: a fresh deploy shouldn't start cycling a relay on an
+# unreviewed default run/interval before the grower has confirmed it.
+EXHAUST_DEFAULT_RUN_MINUTES = int(os.getenv("EXHAUST_DEFAULT_RUN_MINUTES", "1"))
+EXHAUST_DEFAULT_INTERVAL_MINUTES = int(os.getenv("EXHAUST_DEFAULT_INTERVAL_MINUTES", "5"))
+EXHAUST_SCHEDULE_ENABLED_DEFAULT = os.getenv("EXHAUST_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
+
 connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
@@ -86,6 +97,15 @@ class AppState:
         self.light_on_hours: int = LIGHT_DEFAULT_ON_HOURS
         self.light_commanded: bool = False
         self.light_reported: Optional[bool] = None
+        # Exhaust: same independent-of-`mode` pattern as light, but a
+        # repeating run/interval duty cycle (is_exhaust_on) instead of a
+        # once-a-day on/off window. Never touched by decide_relay_state()
+        # or any sensor reading.
+        self.exhaust_schedule_enabled: bool = EXHAUST_SCHEDULE_ENABLED_DEFAULT
+        self.exhaust_run_minutes: int = EXHAUST_DEFAULT_RUN_MINUTES
+        self.exhaust_interval_minutes: int = EXHAUST_DEFAULT_INTERVAL_MINUTES
+        self.exhaust_commanded: bool = False
+        self.exhaust_reported: Optional[bool] = None
         # Home Assistant reachability, refreshed on its own schedule (see
         # scheduler._check_ha_connection) rather than per-request. None
         # until the first check completes.
@@ -160,6 +180,26 @@ def _light_status(now: datetime) -> LightStatus:
     )
 
 
+def _exhaust_status(now: datetime) -> ExhaustStatus:
+    """Must be called with app_state.lock held. Single source of truth for
+    "what should exhaust be doing right now" - mirrors _light_status()
+    exactly, just with a run/interval duty cycle instead of an on_hours
+    window."""
+    commanded = (
+        is_exhaust_on(now, app_state.exhaust_run_minutes, app_state.exhaust_interval_minutes)
+        if app_state.exhaust_schedule_enabled
+        else app_state.exhaust_commanded
+    )
+    return ExhaustStatus(
+        schedule_enabled=app_state.exhaust_schedule_enabled,
+        run_minutes=app_state.exhaust_run_minutes,
+        interval_minutes=app_state.exhaust_interval_minutes,
+        off_minutes=app_state.exhaust_interval_minutes - app_state.exhaust_run_minutes,
+        commanded=commanded,
+        reported=app_state.exhaust_reported,
+    )
+
+
 def _sync_ac_to_ha(ac_on: bool) -> None:
     """Pushes the AC's desired state to Home Assistant - this is the only
     path that actually controls it, since it has no ESP32 relay. Skips the
@@ -190,6 +230,7 @@ def post_telemetry(
         app_state.last_seen = now
         app_state.reported_relay_state = payload.relay_state
         app_state.light_reported = payload.relay_state.light
+        app_state.exhaust_reported = payload.relay_state.exhaust
         app_state.latest_reading = reading
 
         if app_state.mode == "manual":
@@ -205,10 +246,15 @@ def post_telemetry(
             )
             commanded = decide_relay_state(de_reading, app_state.commanded_relay_state)
 
-        # Light is never touched by decide_relay_state() or the
-        # auto/manual mode above - it's driven entirely by its own
+        # Light and exhaust are never touched by decide_relay_state() or
+        # the auto/manual mode above - each is driven entirely by its own
         # schedule/manual switch, computed fresh every cycle.
-        commanded = commanded.model_copy(update={"light": _light_status(now).commanded})
+        commanded = commanded.model_copy(
+            update={
+                "light": _light_status(now).commanded,
+                "exhaust": _exhaust_status(now).commanded,
+            }
+        )
         app_state.commanded_relay_state = commanded
 
         mode = app_state.mode
@@ -251,12 +297,15 @@ def get_status():
         if reported is not None and app_state.last_ha_ac_state is not None:
             reported = reported.model_copy(update={"ac": app_state.last_ha_ac_state})
 
-        # Commanded light state is recomputed fresh here (not read from
-        # commanded_relay_state, which only updates on the ESP32's own
-        # ~20s telemetry cadence) so the dashboard reflects a schedule
+        # Commanded light/exhaust state is recomputed fresh here (not read
+        # from commanded_relay_state, which only updates on the ESP32's
+        # own ~20s telemetry cadence) so the dashboard reflects a schedule
         # boundary the moment it's crossed, not up to a cycle late.
         commanded = app_state.commanded_relay_state.model_copy(
-            update={"light": _light_status(now).commanded}
+            update={
+                "light": _light_status(now).commanded,
+                "exhaust": _exhaust_status(now).commanded,
+            }
         )
 
         return StatusOut(
@@ -267,6 +316,7 @@ def get_status():
             latest_reading=app_state.latest_reading,
             offline=offline,
             light=_light_status(now),
+            exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
         )
 
@@ -402,10 +452,9 @@ def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
         }
 
     if payload.relay == "ac":
-        # Unlike fan/exhaust/pump, the ESP32 never picks this up on its own
-        # poll - there's no relay for it to poll. Push it now rather than
-        # waiting for the next telemetry cycle to (indirectly) trigger the
-        # sync.
+        # Unlike fan/pump, the ESP32 never picks this up on its own poll -
+        # there's no relay for it to poll. Push it now rather than waiting
+        # for the next telemetry cycle to (indirectly) trigger the sync.
         background_tasks.add_task(_sync_ac_to_ha, payload.state)
 
     return result
@@ -431,6 +480,30 @@ def set_light_manual(payload: LightManualIn):
             raise HTTPException(status_code=409, detail="light schedule is enabled")
         app_state.light_commanded = payload.state
         return _light_status(datetime.utcnow())
+
+
+@app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
+def set_exhaust_schedule(payload: ExhaustScheduleIn):
+    """Master switch for exhaust: enabling the schedule hands control to
+    is_exhaust_on() (independent of the environmental auto/manual `mode`
+    and of any sensor reading); disabling it falls back to whatever was
+    last set via /api/exhaust/manual. run_minutes/interval_minutes are
+    always saved even when the schedule is currently off, so they're
+    ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
+    with app_state.lock:
+        app_state.exhaust_schedule_enabled = payload.enabled
+        app_state.exhaust_run_minutes = payload.run_minutes
+        app_state.exhaust_interval_minutes = payload.interval_minutes
+        return _exhaust_status(datetime.utcnow())
+
+
+@app.post("/api/exhaust/manual", response_model=ExhaustStatus)
+def set_exhaust_manual(payload: ExhaustManualIn):
+    with app_state.lock:
+        if app_state.exhaust_schedule_enabled:
+            raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
+        app_state.exhaust_commanded = payload.state
+        return _exhaust_status(datetime.utcnow())
 
 
 @app.post("/api/export")
