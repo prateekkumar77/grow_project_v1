@@ -26,11 +26,12 @@ of silently decided.
   true every cycle" implied some form of stable on/off state rather than a
   bare `<` comparison.
 - **Humidity/temperature rule interaction**: both the humidity and
-  temperature blocks can independently set `exhaust`/`fan`; they're
-  applied in sequence (humidity first, then temperature) so either one
-  turning the exhaust on is sufficient, and neither block turns off what
-  the other just turned on within the same call (e.g. a temperature-driven
-  "hold" doesn't undo a humidity-driven exhaust-on in the same reading).
+  temperature blocks can independently set `exhaust`/`ac` (always
+  together) and `fan`; they're applied in sequence (humidity first, then
+  temperature) so either one escalating is sufficient, and neither block
+  turns off what the other just turned on within the same call (e.g. a
+  temperature-driven "hold" doesn't undo a humidity-driven exhaust/AC-on
+  in the same reading).
 
 ## Pump safety (firmware)
 
@@ -90,43 +91,84 @@ of silently decided.
   ships with the current (2024+) `media_player_entity_id` + `cache` shape
   and a comment calling out that it needs to be verified against the
   user's actual HA version before relying on it.
-- **Exhaust (formerly "AC via Home Assistant") is a plain physical ESP32
-  relay**: an earlier revision modeled the AC as a Home-Assistant-only
-  device with no physical relay (`ha_client.set_ac()`, `HA_AC_ENTITY`,
-  its own dashboard panel). The current hardware wires all four
-  components — fan, exhaust, pump, light — to ESP32 relays directly, so
-  `exhaust` behaves exactly like fan and pump: the ESP32 polls
-  `commanded_relay_state` every telemetry cycle and drives the relay
-  itself, with no Home Assistant dependency, no out-of-band push from
-  `/api/relay`, and the offline emergency-temperature floor protecting it
-  the same way it protects the fan. All of the HA-specific plumbing that
-  existed only to route around a missing relay (`set_ac()`,
-  `HA_AC_ENTITY`/`HA_AC_DOMAIN`, the `last_ha_ac_state` reconciliation in
-  `/api/status`) was removed as dead weight once the relay exists.
-- **HA reachability is still a background poll, not an inline check**:
-  Home Assistant is still used for temperature alerts (`ha_client.speak`/
-  `send_alert`), and `GET /api/status` is polled every 5s by the
-  dashboard while `/api/telemetry` has the ESP32 waiting on its response
-  with a firmware-side timeout of its own - neither can afford to block
-  on a live call to Home Assistant. A scheduler job
-  (`_check_ha_connection`, default every 30s) calls
+- **Exhaust is a new, separate physical relay - AC keeps its existing
+  Home-Assistant-only design**: a physical exhaust fan was added
+  alongside AC rather than replacing it. Both escalate together on the
+  same humidity/temperature triggers in `decide_relay_state()` (exhaust
+  vents locally, AC actively conditions the air), but they're driven
+  completely differently: exhaust is `RELAY_EXHAUST_PIN` on the ESP32,
+  polled and applied every telemetry cycle exactly like fan/pump; AC has
+  no ESP32 pin at all and is pushed to Home Assistant via
+  `ha_client.set_ac()`. An earlier pass briefly renamed `ac` to
+  `exhaust` and removed the Home Assistant integration entirely,
+  mistaking "add a physical exhaust relay" for "replace AC with a
+  physical relay" - reverted once clarified that AC's Home
+  Assistant-only setup was meant to stay exactly as it was, alongside the
+  new exhaust relay, not instead of it.
+  - **Configurable domain** (`HA_AC_DOMAIN`, default `switch`): an AC on a
+    smart plug is a `switch.*` entity; a native smart AC/mini-split is
+    usually `climate.*`. Rather than guess which one a given user has,
+    the domain (and thus which HA service gets called) is an env var.
+  - **Backgrounded, not synchronous**: `/api/telemetry` schedules the HA
+    push via FastAPI `BackgroundTasks` instead of calling it inline. A
+    slow Home Assistant call could otherwise add up to
+    `HA_REQUEST_TIMEOUT_SECONDS` (default 5s) of latency to the
+    `/api/telemetry` response — uncomfortably close to the firmware's own
+    ~5s HTTP timeout, risking a telemetry POST timing out on the ESP32
+    side purely because HA was slow, which would then trip the firmware's
+    "POST failed → force pump off" safety path for an unrelated reason.
+  - **`/api/relay` pushes AC changes immediately**: fan/exhaust/pump
+    manual commands rely on the ESP32 polling `commanded_relay_state` on
+    its next cycle, but there's no ESP32 relay for AC to poll into.
+    Without an immediate push, a manual AC toggle from the dashboard
+    would silently do nothing until the next telemetry cycle (up to
+    `TELEMETRY_INTERVAL_MS`, default 20s) coincidentally re-synced it.
+  - **`/api/status` reports HA-confirmed state, not the ESP32's**: the
+    ESP32 has no `ac` relay pin to report a real value for at all.
+    `get_status()` substitutes `AppState.last_ha_ac_state` — the last
+    state actually confirmed applied via a successful HA call — so the
+    dashboard's pending indicator compares against reality instead of a
+    field the ESP32 never meaningfully populates.
+  - **Retry semantics**: `_sync_ac_to_ha` only marks a state "confirmed"
+    on a successful HA call, so a failed push (HA temporarily down) gets
+    retried on the next telemetry cycle rather than silently drifting out
+    of sync.
+  - **Trade-off, called out in `docs/automation-logic.md`**: AC loses the
+    firmware's offline emergency-temperature floor, since that floor can
+    only drive a physical relay - exhaust gets it, AC doesn't. This is
+    inherent to AC being an HA-only device, not something this change
+    could route around - documented rather than silently accepted.
+- **HA reachability is a background poll, not an inline check**: `GET
+  /api/status` is polled every 5s by the dashboard, and `/api/telemetry`
+  has the ESP32 waiting on its response with a firmware-side timeout of
+  its own - neither can afford to block on a live call to Home Assistant.
+  A scheduler job (`_check_ha_connection`, default every 30s) calls
   `ha_client.check_connection()` (`GET {HA_URL}/api/`, HA's own base
-  health endpoint) and caches `reachable`/`checked_at` on `AppState`;
-  both read endpoints just return the cached value. Trade-off: the
-  indicator can lag reality by up to the poll interval - accepted since
-  immediate accuracy would mean blocking a request on HA's response time,
-  and a 30s-stale "unreachable" badge is a fine cost for never stalling
-  the dashboard or the ESP32.
+  health endpoint - works without any entity configured) and caches
+  `reachable`/`checked_at` on `AppState`; both read endpoints just return
+  the cached value. Trade-off: the indicator can lag reality by up to the
+  poll interval - accepted since immediate accuracy would mean either
+  blocking a request on HA's response time or making a second HA call to
+  the wrong latency budget entirely; a 30s-stale "unreachable" badge is a
+  fine cost for never stalling the dashboard or the ESP32.
+- **`GET /api/`, not a call against `HA_AC_ENTITY`**: the health check
+  hits Home Assistant's own root API endpoint rather than trying to read
+  the configured AC entity's state. This means "Home Assistant reachable"
+  is checked independently of whether AC-specific entities are even
+  configured yet, and doesn't touch `HA_AC_ENTITY` should it be wrong -
+  the two concerns (is HA up vs. is the AC entity ID correct) stay
+  separate, matching how the request explicitly asked for a connectivity
+  indicator, not an AC-entity health check.
 
 ## Light schedule
 
 - **A fourth, independent ESP32 relay, not folded into the auto/manual
   relays**: the light gets its own `RELAY_LIGHT_PIN` (firmware) and its
   own `light` field on `RelayState`, entirely separate from
-  fan/exhaust/pump. It is never passed to `decide_relay_state()` and is
-  not gated by the environmental `mode` at all - the requirement was
+  fan/exhaust/ac/pump. It is never passed to `decide_relay_state()` and
+  is not gated by the environmental `mode` at all - the requirement was
   explicit that light "will not be affected by auto mode." A dedicated
-  relay channel keeps the light fully independent of the other three,
+  relay channel keeps the light fully independent of the other outputs,
   which are all decided together by the same function.
 - **Schedule anchored to UTC midnight, not to when it was enabled**: the
   brief describes a duration ("18 on / 6 off"), not a specific start
@@ -154,7 +196,7 @@ of silently decided.
   even while the schedule is off (so it's ready the instant it's turned
   on). `POST /api/light/manual` is rejected with `409` while the schedule
   is enabled, deliberately mirroring how `/api/relay` already rejects a
-  manual fan/exhaust/pump command outside manual mode - one consistent
+  manual fan/exhaust/ac/pump command outside manual mode - one consistent
   pattern for "who owns this relay right now" across the whole app,
   rather than inventing a second one for light.
 - **No auto-revert for manual light control**: unlike the environmental
@@ -321,18 +363,21 @@ of silently decided.
   segmented control needs its own scoped rule for the same reason - the
   shared `.segmented`/`.segmented-thumb` base styling is fine to reuse,
   the position/color override per state is not.
-- **Exhaust returned to the relay grid, the dedicated "home assistant"
-  panel dropped back to a bare status badge**: with AC (now exhaust)
-  back to being a normal physical relay, the visual distinction that
-  justified pulling it into its own panel no longer applies - it's the
-  same kind of thing as fan and pump again, so it rejoined `.relays`
-  (which went back to 3 columns) and the "home assistant" panel shrank to
-  just the reachability badge, since Home Assistant is still relevant for
-  temperature alerts even though it no longer controls any relay.
-  The `.control-btn`/`.control-row` classes introduced for the old AC
-  panel weren't removed - they're still shared by the light panel and the
-  export panel, so generalizing them wasn't wasted even though the AC use
-  case that first motivated it is gone.
+- **Exhaust joined the relay grid; AC keeps its own "home assistant"
+  panel**: exhaust is a normal physical relay, so it's a tile in
+  `.relays` alongside fan and pump (which grew from 2 to 3 columns) - the
+  same treatment fan/pump already get. AC stays visually separate in its
+  own panel, unchanged from before: it's still not the same kind of thing
+  as a local relay, and still depends entirely on Home Assistant being
+  reachable, so it keeps its own section with the live reachability badge
+  rather than blending into the grid.
+- **AC's "on" accent is teal, not the green/amber used elsewhere**: every
+  other "on" state (fan, exhaust, pump, light) uses green or amber, so AC
+  needed its own color to read as visually distinct at a glance - reusing
+  teal (already in the palette for the humidity readout) both avoids
+  introducing a new color and loosely signals "this is the
+  cooler/external one," consistent with a Home Assistant-mediated
+  control rather than a direct relay.
 - **HA connection badge reuses the same status-badge component as the
   backend connection indicator**: generalized `#conn-badge`'s CSS from an
   ID-scoped rule to a `.status-badge` class so the new HA badge could

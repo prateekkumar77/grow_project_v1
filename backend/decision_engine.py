@@ -38,27 +38,32 @@ class Reading:
 def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelayState:
     fan = previous_state.fan
     exhaust = previous_state.exhaust
+    ac = previous_state.ac
     pump = previous_state.pump
 
     temp_delta = reading.temp_c - reading.baseline_temp_c
 
     # --- humidity ------------------------------------------------------------
     if reading.humidity >= HUMIDITY_HIGH_THRESHOLD:
-        # Rising humidity -> vent it out via the exhaust.
+        # Rising humidity -> exhaust vents the tent out while AC actively
+        # conditions the air - both escalate together, not one or the
+        # other.
         exhaust = True
+        ac = True
     elif reading.humidity <= HUMIDITY_LOW_THRESHOLD:
-        # Unusually low humidity (rare) -> exhaust off, fan pulls in (more
-        # humid) room air instead.
+        # Unusually low humidity (rare) -> exhaust/AC off, fan pulls in
+        # (more humid) room air instead.
         exhaust = False
+        ac = False
         fan = True
 
     # --- temperature -----------------------------------------------------------
     if temp_delta >= TEMP_RISE_EXHAUST_THRESHOLD_C:
-        # Larger/sustained rise -> escalate to the exhaust (pulls hot,
-        # humid tent air out rather than just circulating it).
+        # Larger/sustained rise -> escalate to exhaust + AC together.
         exhaust = True
+        ac = True
     elif temp_delta >= TEMP_RISE_FAN_THRESHOLD_C:
-        # Moderate rise -> fan alone first, not exhaust.
+        # Moderate rise -> fan alone first, not exhaust/AC.
         fan = True
 
     # --- soil moisture / pump ---------------------------------------------------
@@ -68,4 +73,4 @@ def decide_relay_state(reading: Reading, previous_state: RelayState) -> RelaySta
         pump = False
     # else: within the hysteresis band - hold whatever the pump was doing.
 
-    return RelayState(fan=fan, exhaust=exhaust, pump=pump)
+    return RelayState(fan=fan, exhaust=exhaust, ac=ac, pump=pump)

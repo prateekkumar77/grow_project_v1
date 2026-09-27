@@ -6,11 +6,13 @@ readings and its actual relay states, and applies whatever the backend
 tells it to do.
 
 Everything from here down through "Manual mode" covers **fan, exhaust,
-and pump** — the three relays `backend/decision_engine.py` actually
-decides, and only while the system is in **auto** mode. The **light** is
-covered separately, below, because it isn't part of any of that: it has
-its own schedule and is never touched by `decide_relay_state()` or by
-auto/manual mode at all.
+AC, and pump** — the four outputs `backend/decision_engine.py` actually
+decides, and only while the system is in **auto** mode. Fan, exhaust, and
+pump are physical ESP32 relays; AC has no relay at all and is driven
+through Home Assistant instead (see "AC: no physical relay" below). The
+**light** is covered separately, further below, because it isn't part of
+any of that: it has its own schedule and is never touched by
+`decide_relay_state()` or by auto/manual mode at all.
 
 ## What gets measured
 
@@ -24,13 +26,14 @@ auto/manual mode at all.
 ## Humidity rules
 
 - **Humidity climbing at or above `HUMIDITY_HIGH_THRESHOLD`** (default 65%):
-  turn the **exhaust** on. It vents the tent's humid air out, which brings
-  both temperature and humidity down together.
+  turn **exhaust and AC on together**. Exhaust vents the tent's humid air
+  out locally; AC actively conditions the air via Home Assistant. Both
+  escalate on the same trigger rather than one standing in for the other.
 - **Humidity dropping at or below `HUMIDITY_LOW_THRESHOLD`** (default 40%,
-  expected to be rare with no active ventilation): turn the **exhaust off**
-  and the **fan on**, so the tent pulls in room air instead — the room is
-  normally more humid than the tent, so this raises humidity back up
-  without needing a humidifier.
+  expected to be rare with no active ventilation): turn **exhaust and AC
+  off** and the **fan on**, so the tent pulls in room air instead — the
+  room is normally more humid than the tent, so this raises humidity back
+  up without needing a humidifier.
 
 ## Temperature rules
 
@@ -40,8 +43,9 @@ Measured as a rise above the rolling baseline:
   default 2–3°C): turn the **fan on alone**. Air movement alone is often
   enough to knock a couple of degrees off without pulling in outside air.
 - **A larger or sustained rise** (at or above `TEMP_RISE_EXHAUST_THRESHOLD_C`,
-  default 3°C): **escalate to the exhaust**, which pulls the hot, humid
-  tent air out entirely rather than relying on internal air movement alone.
+  default 3°C): **escalate to exhaust and AC together**, which handles
+  both temperature and humidity at once rather than relying on air
+  movement alone.
 
 ## Soil moisture / watering
 
@@ -57,6 +61,44 @@ Measured as a rise above the rolling baseline:
   transition, and independently enforces a **hard 30 second max run** with
   a **60 second cooldown** afterwards, regardless of what the backend asks
   for. That's a firmware safety limit, not a decision the backend makes.
+
+## AC: no physical relay, controlled via Home Assistant
+
+Unlike fan, exhaust, and pump, the AC in this deployment is a Google Home
+device (a smart plug or native smart AC/mini-split), not something wired
+to an ESP32 relay. The decision engine's `ac` output escalates in
+lockstep with `exhaust` (same triggers, same section above) - what
+differs is how it gets applied:
+
+- **Fan / exhaust / pump**: the ESP32 polls its commanded state on every
+  telemetry cycle and drives the physical relay itself.
+- **AC**: the backend pushes the state directly to Home Assistant
+  (`ha_client.set_ac()`, entity configured via `HA_AC_ENTITY`/
+  `HA_AC_DOMAIN`) whenever it changes — once from `/api/telemetry` in
+  auto mode, or immediately from `/api/relay` in manual mode, since
+  there's no ESP32 relay for a manual click to reach otherwise. The call
+  runs in the background so a slow or unreachable Home Assistant never
+  delays the ESP32's telemetry response.
+- `/api/status` reports the AC's last **Home Assistant-confirmed** state
+  as its "reported" value, since the ESP32 has no relay pin for it to
+  report at all.
+
+This does mean the AC loses the one piece of true offline resilience the
+other relays have: if the network or Home Assistant is down, the AC just
+stays wherever it last was, with no local device watching temperature for
+it - exhaust still gets that offline backstop since it has a real relay
+(see `EMERGENCY_TEMP_C` below), AC does not.
+
+Because AC control depends entirely on Home Assistant being reachable,
+the dashboard gives it its own panel, separate from the ESP32 relay tiles,
+with a live "is Home Assistant actually reachable right now" indicator.
+The backend checks this independently of any AC command - a background
+job (`scheduler._check_ha_connection`, every `HA_HEALTH_CHECK_INTERVAL_SECONDS`,
+default 30s) calls `ha_client.check_connection()` (`GET {HA_URL}/api/`,
+Home Assistant's own health-check endpoint) and caches the result. `GET
+/api/status` just reports that cached value instantly - the check never
+runs on a request path, so a slow or hanging Home Assistant can't add
+latency to a page load the way an inline check would.
 
 ## Manual mode
 
@@ -92,7 +134,7 @@ of its own, controlled from the dashboard:
 
 The dashboard's schedule toggle is the master switch between these two
 states; attempting a manual command while the schedule is on is rejected
-(`409`), the same way `/api/relay` rejects a manual fan/exhaust/pump
+(`409`), the same way `/api/relay` rejects a manual fan/exhaust/ac/pump
 command outside manual mode.
 
 There's no offline-specific logic for the light beyond what every other
@@ -116,5 +158,7 @@ connection:
   35.0°C — sanity-check this against your actual tent before trusting it):
   force the fan and exhaust on locally, as a one-way floor. This is not
   real climate control, just a last-resort heat cutoff while nothing else
-  is watching.
+  is watching. **AC gets no such floor** - it has no physical relay for
+  this firmware-only logic to drive, so while offline it just holds
+  whatever it was last set to.
 - Everything else holds its last-commanded state while offline.

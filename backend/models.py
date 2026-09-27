@@ -9,6 +9,14 @@ from sqlmodel import Field, SQLModel
 class RelayState(BaseModel):
     fan: bool = False
     exhaust: bool = False
+    # AC has no physical ESP32 relay - it's a Google Home device driven
+    # entirely through Home Assistant (see ha_client.set_ac()). It escalates
+    # in lockstep with `exhaust` in decide_relay_state(): the same
+    # humidity/temp thresholds set both, exhaust venting the tent locally
+    # while AC actively conditions the air. The ESP32 never reports a real
+    # value for this field (no pin to read), so `reported_relay_state.ac`
+    # is overridden with the last Home-Assistant-confirmed state instead.
+    ac: bool = False
     pump: bool = False
     # Grow light. Has its own ESP32 relay like fan/pump, but is never
     # touched by decide_relay_state() or the auto/manual environmental
@@ -43,7 +51,7 @@ class ModeIn(BaseModel):
 
 
 class RelayIn(BaseModel):
-    relay: Literal["fan", "exhaust", "pump"]
+    relay: Literal["fan", "exhaust", "ac", "pump"]
     state: bool
 
 
@@ -103,6 +111,6 @@ class ReadingRow(SQLModel, table=True):
     # reported state (physical truth), not the commanded one - matches
     # how the dashboard treats "reported" as ground truth elsewhere.
     light_state: bool
-    reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "pump": bool, "light": bool}
+    reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str
