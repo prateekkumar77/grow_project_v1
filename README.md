@@ -27,29 +27,28 @@ value.
 
 ## Methodology
 
-The decision engine doesn't react to absolute sensor values — it reacts to
-**change relative to a rolling baseline**. Every telemetry cycle, the
-backend computes an average temperature and humidity over the last
-`BASELINE_WINDOW_MINUTES` and measures the current reading against that,
-not against a fixed number. A tent that's steadily warm isn't a rise; a
-sudden climb is. This matters because "normal" varies a lot by plant,
-growth stage, and time of day, and a baseline-relative approach keeps
-working as those conditions drift without needing new code.
+The decision engine reacts to **absolute sensor values against fixed
+grow-profile thresholds** — no rolling baseline, no history lookup. Every
+threshold is a plain environment-variable number (see "Grow profile"
+below), so the same reading always produces the same decision regardless
+of what the tent was doing an hour ago.
 
-On top of that baseline comparison, three independent rule groups run
-every cycle and combine into one relay command — **fan, AC, and pump**.
-Exhaust and light are deliberately not part of this: both are driven
-entirely by their own schedules (see below), never by a sensor reading.
+Three independent rule groups run every cycle and combine into one relay
+command — **fan, AC, and pump**. Exhaust and light are deliberately not
+part of this: both are driven entirely by their own schedules (see
+below), never by a sensor reading.
 
-1. **Humidity** — rising humidity escalates straight to the AC (it pulls
-   in cooler, drier air, addressing both variables at once). Unusually low
-   humidity does the opposite: AC off, fan on, to pull in comparatively
-   humid room air instead.
-2. **Temperature** — an escalation ladder rather than a single on/off.
-   A moderate rise above baseline tries the fan alone first (cheap, lower
-   disturbance); only a larger or sustained rise escalates to the AC.
-   This avoids running the more disruptive/expensive intervention for
-   fluctuations the fan alone can handle.
+1. **Humidity** — humidity at or above `HUMIDITY_HIGH_THRESHOLD` escalates
+   straight to the AC (it pulls in cooler, drier air, addressing both
+   variables at once). At or below `HUMIDITY_LOW_THRESHOLD` does the
+   opposite: AC off, fan on, to pull in comparatively humid room air
+   instead.
+2. **Temperature** — an escalation ladder rather than a single on/off,
+   all absolute °C values: at or above `TEMP_FAN_THRESHOLD_C` tries the
+   fan alone first (cheap, lower disturbance); at or above the higher
+   `TEMP_AC_THRESHOLD_C` escalates to the AC. At or below
+   `TEMP_LOW_THRESHOLD_C` (unusually cold) does the same thing the
+   low-humidity case does: AC off, fan on to pull in warmer room air.
 3. **Soil moisture** — a threshold with hysteresis: the pump turns on
    below a low-moisture threshold and only turns back off once moisture
    recovers past that threshold *plus a margin*, so it doesn't chatter
@@ -72,9 +71,9 @@ these form the "grow profile" for whatever's in the tent:
 | Variable | Governs |
 |---|---|
 | `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when AC-on / fan-on-AC-off kicks in for humidity |
-| `TEMP_RISE_FAN_THRESHOLD_C` / `TEMP_RISE_AC_THRESHOLD_C` | how far above baseline before fan, then AC, engage |
+| `TEMP_FAN_THRESHOLD_C` / `TEMP_AC_THRESHOLD_C` | absolute °C at which fan, then AC, engage |
+| `TEMP_LOW_THRESHOLD_C` | absolute °C below which AC turns off and fan pulls in warmer room air |
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
-| `BASELINE_WINDOW_MINUTES` | how far back the rolling baseline looks |
 | `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
 
 Different plants, growth stages, and tent setups call for different

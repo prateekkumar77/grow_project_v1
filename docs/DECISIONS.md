@@ -6,15 +6,48 @@ of silently decided.
 
 ## Decision engine
 
-- **`decide_relay_state` signature**: the brief gives it as
-  `decide_relay_state(reading, previous_state)` with no baseline parameter,
-  but "a temperature rise of 2–3°C above the recent baseline" requires
-  history the function can't fetch itself (it must stay pure/I/O-free). The
-  `Reading` dataclass passed in therefore carries `baseline_temp_c` and
-  `baseline_humidity` fields alongside the instantaneous sensor values —
-  computed by the caller (`main.py`, as a rolling average over
-  `BASELINE_WINDOW_MINUTES`, default 30) and handed in. The function itself
-  still does no I/O.
+- **`decide_relay_state` signature**: `decide_relay_state(reading,
+  previous_state)`, where `Reading` carries only the instantaneous
+  `temp_c`/`humidity`/`soil_moisture` - no history, no baseline. The
+  function stays pure/I/O-free and every threshold it compares against is
+  a fixed grow-profile constant (see below).
+- **Temperature switched from a rolling-baseline rise to absolute
+  grow-profile thresholds**: the original design measured temperature as
+  a rise above a rolling average (`baseline_temp_c`, computed by the
+  caller from the last `BASELINE_WINDOW_MINUTES` of history) rather than
+  an absolute value - "a tent that's steadily warm isn't a rise; a sudden
+  climb is." That was replaced with plain absolute thresholds
+  (`TEMP_FAN_THRESHOLD_C`, `TEMP_AC_THRESHOLD_C`), matching how humidity
+  already worked (`HUMIDITY_HIGH_THRESHOLD`/`HUMIDITY_LOW_THRESHOLD` were
+  never baseline-relative to begin with - `baseline_humidity` was
+  computed but silently unused in `decide_relay_state`, dead from the
+  start). This removes `main.py`'s `_compute_baseline()`/
+  `BASELINE_WINDOW_MINUTES` entirely and makes every decision-engine
+  threshold plain, env-configurable, and directly comparable across the
+  whole grow profile - no more "why does temperature need history but
+  humidity doesn't" asymmetry, and no DB read on every telemetry cycle
+  just to decide relay state.
+  - **Added `TEMP_LOW_THRESHOLD_C`**: the baseline-relative design never
+    had a "too cold" case for temperature (only humidity did). Since the
+    switch to absolute values makes this trivial to add symmetrically -
+    at or below `TEMP_LOW_THRESHOLD_C`, turn AC off and fan on, mirroring
+    the low-humidity rule's exact reasoning (pull in comparatively warmer
+    room air instead of cooling a tent that's already too cold).
+  - **Kept the two-tier fan/AC ladder rather than collapsing to a single
+    high/low pair like humidity**: humidity has one high threshold (→
+    AC) and one low threshold (→ AC off + fan). Temperature keeps its
+    existing moderate/severe two-step ladder (fan alone, then AC) instead
+    of matching humidity's shape exactly, since fan-before-AC for a
+    moderate temperature rise was working, intentional behavior from the
+    original brief - the baseline-to-absolute switch is only about how
+    the threshold is computed, not about removing an escalation step
+    nothing asked to remove.
+  - **Placeholder values** (`TEMP_FAN_THRESHOLD_C=26.0`,
+    `TEMP_AC_THRESHOLD_C=28.0`, `TEMP_LOW_THRESHOLD_C=18.0`): chosen to
+    roughly match the old baseline-relative defaults assuming a ~24°C
+    ambient (baseline+2/+3 → 26/28), but these are absolute now and need
+    the same "tune against your actual tent" treatment as every other
+    grow-profile value (`SOIL_ADC_DRY`/`WET`, `EMERGENCY_TEMP_C`, etc.).
 - **Manual mode gating** happens in the caller, not inside
   `decide_relay_state`: when `mode == "manual"`, `main.py` never calls the
   function at all and just reuses the last dashboard-commanded state. This

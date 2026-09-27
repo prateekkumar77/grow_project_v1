@@ -19,10 +19,12 @@ all.
 
 - **Temperature** and **humidity** from the DHT22.
 - **Soil moisture** from the analog probe, converted to a 0–100% scale.
-- A **rolling baseline** temperature and humidity, averaged over the last
-  `BASELINE_WINDOW_MINUTES` (default 30) of readings. "Rising" or "falling"
-  always means relative to this baseline, not an absolute number — a tent
-  that's steadily warm isn't a rise; a sudden climb is.
+
+Every rule below compares the current reading directly against a fixed
+"grow profile" threshold - there's no baseline or history lookup. The
+same reading always produces the same decision, and retuning for a
+different plant/stage/tent is purely an env-var edit (see
+`backend/.env.example`).
 
 ## Humidity rules
 
@@ -37,14 +39,19 @@ all.
 
 ## Temperature rules
 
-Measured as a rise above the rolling baseline:
+All absolute tent temperature, not a rise relative to anything:
 
-- **A moderate rise** (`TEMP_RISE_FAN_THRESHOLD_C` to `TEMP_RISE_AC_THRESHOLD_C`,
-  default 2–3°C): turn the **fan on alone**. Air movement alone is often
-  enough to knock a couple of degrees off without pulling in outside air.
-- **A larger or sustained rise** (at or above `TEMP_RISE_AC_THRESHOLD_C`,
-  default 3°C): **escalate to AC**, which handles both temperature and
-  humidity at once rather than relying on air movement alone.
+- **At or above `TEMP_FAN_THRESHOLD_C`** (default 26.0°C): turn the
+  **fan on alone**. Air movement alone is often enough to knock a couple
+  of degrees off without pulling in outside air.
+- **At or above `TEMP_AC_THRESHOLD_C`** (default 28.0°C, checked before
+  the fan threshold so the higher bar wins): **escalate to AC**, which
+  handles both temperature and humidity at once rather than relying on
+  air movement alone.
+- **At or below `TEMP_LOW_THRESHOLD_C`** (default 18.0°C, unusually
+  cold): turn the **AC off** and the **fan on**, mirroring the
+  low-humidity rule — pulling in comparatively warmer room air rather
+  than cooling a tent that's already too cold.
 
 ## Soil moisture / watering
 

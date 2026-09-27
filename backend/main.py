@@ -41,7 +41,6 @@ logger = logging.getLogger("main")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/grow.db")
 OFFLINE_THRESHOLD_SECONDS = float(os.getenv("OFFLINE_THRESHOLD_SECONDS", "90"))
-BASELINE_WINDOW_MINUTES = float(os.getenv("BASELINE_WINDOW_MINUTES", "30"))
 ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
@@ -136,22 +135,6 @@ def on_shutdown():
         scheduler.shutdown(wait=False)
 
 
-def _compute_baseline(session: Session, now: datetime) -> tuple[float, float, float]:
-    """Rolling average temp/humidity over the last BASELINE_WINDOW_MINUTES,
-    used by the decision engine to detect a *rise* rather than react to
-    absolute temperature. Falls back to the current reading (delta=0) when
-    there's no history yet."""
-    window_start = now - timedelta(minutes=BASELINE_WINDOW_MINUTES)
-    rows = session.exec(
-        select(ReadingRow).where(ReadingRow.timestamp >= window_start)
-    ).all()
-    if not rows:
-        return None, None, 0  # type: ignore[return-value]
-    avg_temp = sum(r.temp_c for r in rows) / len(rows)
-    avg_humidity = sum(r.humidity for r in rows) / len(rows)
-    return avg_temp, avg_humidity, len(rows)
-
-
 def _light_status(now: datetime) -> LightStatus:
     """Must be called with app_state.lock held. Single source of truth for
     "what should the light be doing right now" - used by /api/telemetry,
@@ -223,13 +206,10 @@ def post_telemetry(
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
         else:
-            baseline_temp, baseline_humidity, _n = _compute_baseline(session, now)
             de_reading = DecisionReading(
                 temp_c=reading.temp_c,
                 humidity=reading.humidity,
                 soil_moisture=reading.soil_moisture,
-                baseline_temp_c=baseline_temp if baseline_temp is not None else reading.temp_c,
-                baseline_humidity=baseline_humidity if baseline_humidity is not None else reading.humidity,
             )
             commanded = decide_relay_state(de_reading, app_state.commanded_relay_state)
 
