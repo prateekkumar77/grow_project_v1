@@ -134,6 +134,24 @@ rejected with `409` while the schedule is enabled, and `run_minutes`
 can't exceed `interval_minutes` (rejected with `422`) since running
 longer than the cycle itself doesn't mean anything.
 
+## Activity log
+
+The dashboard has a scrollable "recent activity" panel showing the last 20
+notable actions, newest first, each with a timestamp: mode switches
+(`auto mode on`/`manual mode on`), relay on/off transitions for every
+relay (`fan on`, `pump off`, `light on`, `exhaust off`, `ac on` - whether
+triggered by a manual dashboard click or the decision engine/schedule),
+light/exhaust schedule toggles and reconfiguration (`light schedule on`,
+`light schedule set: 18h on/day`, `exhaust schedule set: run 1m every
+5m`), and data exports.
+
+Only actual transitions are logged - a relay holding steady across
+telemetry cycles never adds an entry, so the feed doesn't fill up with
+repeats of the same state. It's in-memory only (an `ActivityLog` ring
+buffer capped at the last 20 entries, see `backend/activity_log.py`),
+piggybacking on the existing 5s `/api/status` poll rather than its own
+endpoint - like the rest of `AppState`, it resets on backend restart.
+
 ## History charts
 
 The dashboard has a second tab, **history**, alongside the live view:
@@ -214,7 +232,7 @@ pio run --target upload
 | Method & path | Caller | Purpose |
 |---|---|---|
 | `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
-| `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading |
+| `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading, last 20 activity-log entries |
 | `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |

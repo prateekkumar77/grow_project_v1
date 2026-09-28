@@ -320,7 +320,50 @@ of silently decided.
   inventing a different shape for exhaust keeps "who owns this relay
   right now" consistent across every schedule-driven relay in the app.
 
-## History charts
+## Activity log
+
+- **In-memory ring buffer (`ActivityLog`, capped at 20), not a DB table.**
+  This is a glanceable "what just happened" feed, not an audit trail that
+  needs to survive a restart or be queryable by date range - `ReadingRow`
+  already exists for anything that needs real persistence and export.
+  Matches the rest of `AppState`'s volatility: mode, schedule config, and
+  now this all reset together on restart, rather than half of the runtime
+  state persisting and half not.
+- **Log only actual transitions, never every telemetry cycle regardless of
+  change.** `RelayActivityTracker` (in `activity_log.py`) keeps the last
+  logged value per relay and only records an entry when it differs from
+  the new one. Without this, the feed would fill with a repeated "fan on"
+  every ~20s telemetry cycle for as long as the fan happened to already be
+  on, drowning out anything that actually happened.
+- **`RelayActivityTracker` stores plain booleans in a dict, not a
+  `RelayState` object.** The first implementation stored the last
+  `RelayState` instance directly as the comparison baseline, and had a
+  real bug caught during live verification: `main.py`'s `POST /api/relay`
+  handler does `setattr(app_state.commanded_relay_state, ...)`, mutating
+  that object in place - since the tracker's baseline was the *same
+  object* (not a copy), that mutation silently updated the baseline too,
+  so the next diff compared the object to itself and never logged
+  anything again after the first manual relay command. Switching the
+  tracker to hold only independent `bool` values per relay (which can't be
+  mutated out from under it) fixes the whole bug class, not just the one
+  symptom - a `model_copy()` on write would have also fixed this specific
+  case but left the same trap for the next caller that hands the tracker a
+  live, mutable object. Covered by
+  `test_survives_in_place_mutation_of_the_object_passed_to_update` in
+  `test_activity_log.py`, which reproduces the exact scenario.
+- **Piggybacks on `GET /api/status` rather than its own endpoint** - one
+  more field (`activity`) on the same response the dashboard already polls
+  every 5s, consistent with how light/exhaust status work. No separate
+  poll loop, no separate loading state in the frontend.
+- **Manual and auto-triggered changes share one code path
+  (`RelayActivityTracker.update()`/`.note()`)** - the log doesn't
+  distinguish "a human clicked this" from "the decision engine/schedule
+  did this automatically"; it just states what changed. Adding that
+  distinction (or attributing manual actions to the authenticated
+  username, now that dashboard auth exists) is a reasonable future
+  addition but wasn't asked for - keeping the message format to exactly
+  what was requested (`<relay> on`/`off`, `<mode> mode on`, `light/exhaust
+  schedule ...`) avoided guessing at a richer format nobody asked for yet.
 
 - **Aggregation happens server-side, in Python, not in SQL or client-side**:
   `backend/chart_data.py`'s `bucket_by_step()` fetches raw rows for the

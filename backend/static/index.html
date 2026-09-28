@@ -629,6 +629,39 @@
     overflow-x: auto;
   }
 
+  .activity-list {
+    max-height: 280px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .activity-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .activity-row:last-child { border-bottom: none; }
+
+  .activity-time {
+    font-family: var(--font-mono);
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+
+  .activity-message { color: var(--text-dim); }
+
+  .activity-empty {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+
   .chart-container svg { display: block; width: 100%; height: auto; }
 
   .chart-empty {
@@ -870,6 +903,17 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+      recent activity
+      <span class="meta" style="margin-left: auto; font-weight: 400;">last 20 actions</span>
+    </div>
+    <div id="activity-list" class="activity-list">
+      <div class="activity-empty">no actions yet</div>
+    </div>
+  </div>
+
   </div>
 
   <div id="tab-history" class="tab-panel" style="display:none">
@@ -1003,7 +1047,37 @@
     applyLightStatus(status.light);
     applyExhaustStatus(status.exhaust);
     applyAcAndHaStatus(status);
+    applyActivity(status.activity);
     renderLightPie(status.light);
+  }
+
+  function applyActivity(activity) {
+    var container = document.getElementById("activity-list");
+    // Rebuilt every poll cycle - preserve scroll position so scrolling down
+    // to read older entries doesn't get yanked back to the top every 5s.
+    var scrollTop = container.scrollTop;
+    container.innerHTML = "";
+    if (!activity || activity.length === 0) {
+      var empty = document.createElement("div");
+      empty.className = "activity-empty";
+      empty.textContent = "no actions yet";
+      container.appendChild(empty);
+      return;
+    }
+    activity.forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "activity-row";
+      var time = document.createElement("span");
+      time.className = "activity-time";
+      time.textContent = new Date(entry.timestamp + "Z").toLocaleString();
+      var msg = document.createElement("span");
+      msg.className = "activity-message";
+      msg.textContent = entry.message;
+      row.appendChild(time);
+      row.appendChild(msg);
+      container.appendChild(row);
+    });
+    container.scrollTop = scrollTop;
   }
 
   function applyAcAndHaStatus(status) {

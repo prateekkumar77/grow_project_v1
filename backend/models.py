@@ -109,6 +109,11 @@ class HaStatus(BaseModel):
     checked_at: Optional[datetime] = None
 
 
+class ActivityEntryOut(BaseModel):
+    timestamp: datetime
+    message: str
+
+
 class StatusOut(BaseModel):
     mode: Literal["auto", "manual"]
     commanded_relay_state: RelayState
@@ -119,6 +124,10 @@ class StatusOut(BaseModel):
     light: LightStatus
     exhaust: ExhaustStatus
     ha: HaStatus
+    # Newest first, capped at activity_log.MAX_ENTRIES - piggybacks on the
+    # same 5s status poll rather than its own endpoint, same as everything
+    # else the dashboard shows.
+    activity: list[ActivityEntryOut]
 
 
 # --- persistence --------------------------------------------------------------------

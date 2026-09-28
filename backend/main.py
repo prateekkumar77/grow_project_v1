@@ -14,6 +14,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
 import ha_client
+from activity_log import ActivityLog, RelayActivityTracker
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
@@ -21,6 +22,7 @@ from exhaust_schedule import is_exhaust_on
 from excel_export import EXPORT_PATH, export_readings_to_excel
 from light_schedule import is_light_on
 from models import (
+    ActivityEntryOut,
     ExhaustManualIn,
     ExhaustScheduleIn,
     ExhaustStatus,
@@ -113,6 +115,14 @@ class AppState:
         # until the first check completes.
         self.ha_reachable: Optional[bool] = None
         self.ha_last_checked: Optional[datetime] = None
+        # Last 20 notable actions, for the dashboard's activity feed.
+        self.activity_log = ActivityLog()
+        # Tracks each relay's last-logged value so only actual on/off
+        # transitions get recorded (auto-mode decision-engine changes,
+        # manual /api/relay commands, or a light/exhaust schedule crossing
+        # its on/off boundary) - never every telemetry cycle regardless of
+        # whether anything changed.
+        self.relay_activity = RelayActivityTracker(self.activity_log)
 
 
 app_state = AppState()
@@ -276,6 +286,7 @@ def post_telemetry(
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
 
         app_state.commanded_relay_state = commanded
+        app_state.relay_activity.update(commanded)
 
         mode = app_state.mode
 
@@ -337,6 +348,10 @@ def get_status():
             light=_light_status(now),
             exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
+            activity=[
+                ActivityEntryOut(timestamp=e.timestamp, message=e.message)
+                for e in app_state.activity_log.recent()
+            ],
         )
 
 
@@ -461,6 +476,8 @@ def get_week_chart(
 @app.post("/api/mode")
 def set_mode(payload: ModeIn):
     with app_state.lock:
+        if payload.mode != app_state.mode:
+            app_state.activity_log.record(f"{payload.mode} mode on")
         app_state.mode = payload.mode
         app_state.last_manual_activity = datetime.utcnow()
         return {"mode": app_state.mode, "relay_state": app_state.commanded_relay_state.model_dump()}
@@ -472,6 +489,7 @@ def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
+        app_state.relay_activity.update(app_state.commanded_relay_state)
         app_state.last_manual_activity = datetime.utcnow()
         result = {
             "relay": payload.relay,
@@ -496,6 +514,10 @@ def set_light_schedule(payload: LightScheduleIn):
     /api/light/manual. on_hours is always saved even when the schedule is
     currently off, so it's ready as soon as it's turned on."""
     with app_state.lock:
+        if payload.enabled != app_state.light_schedule_enabled:
+            app_state.activity_log.record(f"light schedule {'on' if payload.enabled else 'off'}")
+        if payload.on_hours != app_state.light_on_hours:
+            app_state.activity_log.record(f"light schedule set: {payload.on_hours}h on/day")
         app_state.light_schedule_enabled = payload.enabled
         app_state.light_on_hours = payload.on_hours
         return _light_status(datetime.utcnow())
@@ -506,6 +528,7 @@ def set_light_manual(payload: LightManualIn):
     with app_state.lock:
         if app_state.light_schedule_enabled:
             raise HTTPException(status_code=409, detail="light schedule is enabled")
+        app_state.relay_activity.note("light", payload.state)
         app_state.light_commanded = payload.state
         return _light_status(datetime.utcnow())
 
@@ -519,6 +542,15 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn):
     always saved even when the schedule is currently off, so they're
     ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
     with app_state.lock:
+        if payload.enabled != app_state.exhaust_schedule_enabled:
+            app_state.activity_log.record(f"exhaust schedule {'on' if payload.enabled else 'off'}")
+        if (
+            payload.run_minutes != app_state.exhaust_run_minutes
+            or payload.interval_minutes != app_state.exhaust_interval_minutes
+        ):
+            app_state.activity_log.record(
+                f"exhaust schedule set: run {payload.run_minutes}m every {payload.interval_minutes}m"
+            )
         app_state.exhaust_schedule_enabled = payload.enabled
         app_state.exhaust_run_minutes = payload.run_minutes
         app_state.exhaust_interval_minutes = payload.interval_minutes
@@ -530,6 +562,7 @@ def set_exhaust_manual(payload: ExhaustManualIn):
     with app_state.lock:
         if app_state.exhaust_schedule_enabled:
             raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
+        app_state.relay_activity.note("exhaust", payload.state)
         app_state.exhaust_commanded = payload.state
         return _exhaust_status(datetime.utcnow())
 
@@ -537,6 +570,7 @@ def set_exhaust_manual(payload: ExhaustManualIn):
 @app.post("/api/export")
 def trigger_export(session: Session = Depends(get_session)):
     export_readings_to_excel(session)
+    app_state.activity_log.record("data exported")
     return FileResponse(
         EXPORT_PATH,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
