@@ -34,6 +34,12 @@ class RelayController {
 
   RelayState getState() const { return {_fan, _exhaust, _pump, _light}; }
 
+  // Seconds left before a commanded pump-on will be honored again, or 0 if
+  // no cooldown is active. Reported to the backend so the dashboard can
+  // show "cooldown" instead of an indefinitely-stuck generic "pending"
+  // while a commanded pump-on is being silently refused.
+  float pumpCooldownRemainingSeconds() const;
+
  private:
   void setFan(bool on);
   void setExhaust(bool on);

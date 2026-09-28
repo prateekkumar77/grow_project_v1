@@ -56,7 +56,7 @@ static void runTelemetryCycle() {
   String mode;
   RelayState commanded;
 
-  bool ok = network_post_telemetry(reading, actual, mode, commanded);
+  bool ok = network_post_telemetry(reading, actual, relays.pumpCooldownRemainingSeconds(), mode, commanded);
   if (ok) {
     relays.applyCommand(commanded.fan, commanded.exhaust, commanded.pump, commanded.light);
   } else {

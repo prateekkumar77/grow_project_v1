@@ -67,6 +67,13 @@ All absolute tent temperature, not a rise relative to anything:
   transition, and independently enforces a **hard 30 second max run** with
   a **60 second cooldown** afterwards, regardless of what the backend asks
   for. That's a firmware safety limit, not a decision the backend makes.
+- While that cooldown is active, the firmware silently refuses a commanded
+  pump-on — it doesn't turn on, and it doesn't tell the backend *why* it
+  didn't, just that it's still off. The dashboard would otherwise show a
+  generic, seemingly-stuck "pending" for as long as the cooldown lasts, so
+  the firmware also reports how many seconds are left in it
+  (`pump_cooldown_remaining_s` in the telemetry payload), and the dashboard
+  shows "cooldown ~Xs" instead while it's nonzero.
 
 ## AC: no physical relay, controlled via Home Assistant
 

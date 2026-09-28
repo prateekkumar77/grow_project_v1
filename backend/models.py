@@ -42,6 +42,10 @@ class TelemetryIn(BaseModel):
     humidity: float
     soil_moisture: float
     relay_state: RelayState
+    # Seconds left before the firmware will honor a commanded pump-on
+    # again, or 0 if no cooldown is active. Defaults to 0 so older
+    # firmware that doesn't send this field still validates.
+    pump_cooldown_remaining_s: float = 0.0
 
 
 class TelemetryOut(BaseModel):
@@ -131,6 +135,10 @@ class StatusOut(BaseModel):
     # same 5s status poll rather than its own endpoint, same as everything
     # else the dashboard shows.
     activity: list[ActivityEntryOut]
+    # 0 unless the firmware is currently refusing a commanded pump-on due to
+    # its own post-cap cooldown - lets the dashboard show "cooldown" instead
+    # of a generic, indefinitely-stuck-looking "pending" for the pump.
+    pump_cooldown_remaining_s: float = 0.0
 
 
 # --- persistence --------------------------------------------------------------------

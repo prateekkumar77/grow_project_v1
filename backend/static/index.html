@@ -826,12 +826,12 @@
         <div class="relay" id="relay-fan" data-relay="fan">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 12c1.5-3 1-6-1.5-7.5C8.5 6 8.7 9.3 12 12Z"/><path d="M12 12c3 1.5 6 1 7.5-1.5-2-2-5.3-1.8-7.5 1.5Z"/><path d="M12 12c-1.5 3-1 6 1.5 7.5C15.5 18 15.3 14.7 12 12Z"/></svg>fan</div>
           <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+          <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
         <div class="relay" id="relay-pump" data-relay="pump">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
           <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+          <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
       </div>
     </div>
@@ -1055,6 +1055,18 @@
 
       var pending = status.reported_relay_state != null && commanded !== reported;
       container.classList.toggle("pending", pending);
+
+      // Pump has its own firmware-side safety cap/cooldown, which can
+      // silently refuse a commanded "on" for a while - distinguish that
+      // from the generic, usually-resolves-in-one-cycle "pending" so it
+      // doesn't look like the dashboard is stuck.
+      if (name === "pump") {
+        var pendingText = container.querySelector(".pending-text");
+        var cooldownS = status.pump_cooldown_remaining_s || 0;
+        pendingText.textContent = pending && cooldownS > 0
+          ? "cooldown ≈" + Math.ceil(cooldownS) + "s"
+          : "pending…";
+      }
     });
 
     showBanner("banner-stale", !!status.offline);

@@ -84,3 +84,8 @@ void RelayController::forcePumpOff() {
   setPump(false);
   _pumpOnSinceMs = 0;
 }
+
+float RelayController::pumpCooldownRemainingSeconds() const {
+  if (millis() >= _pumpCooldownUntilMs) return 0.0f;
+  return (_pumpCooldownUntilMs - millis()) / 1000.0f;
+}

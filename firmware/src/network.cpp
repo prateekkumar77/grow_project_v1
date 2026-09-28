@@ -21,13 +21,15 @@ bool network_try_connect() {
 }
 
 bool network_post_telemetry(const Reading& reading, const RelayState& actual,
-                             String& outMode, RelayState& outCommanded) {
+                             float pumpCooldownRemainingS, String& outMode,
+                             RelayState& outCommanded) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
   StaticJsonDocument<256> req;
   req["temp_c"] = reading.temp_c;
   req["humidity"] = reading.humidity;
   req["soil_moisture"] = reading.soil_moisture;
+  req["pump_cooldown_remaining_s"] = pumpCooldownRemainingS;
   JsonObject relayState = req.createNestedObject("relay_state");
   relayState["fan"] = actual.fan;
   relayState["exhaust"] = actual.exhaust;

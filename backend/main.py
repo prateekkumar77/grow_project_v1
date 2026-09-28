@@ -93,6 +93,9 @@ class AppState:
         self.last_seen: Optional[datetime] = None
         self.latest_reading: Optional[SensorReading] = None
         self.last_manual_activity: Optional[datetime] = None
+        # 0 unless the firmware is currently refusing a commanded pump-on
+        # due to its own post-cap cooldown - see post_telemetry.
+        self.pump_cooldown_remaining_s: float = 0.0
         # The AC has no physical relay - it's controlled entirely through
         # Home Assistant. This tracks the last state we successfully
         # confirmed HA applied, so /api/status can report real AC state
@@ -279,6 +282,7 @@ def post_telemetry(
         app_state.light_reported = payload.relay_state.light
         app_state.exhaust_reported = payload.relay_state.exhaust
         app_state.latest_reading = reading
+        app_state.pump_cooldown_remaining_s = payload.pump_cooldown_remaining_s
 
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
@@ -376,6 +380,7 @@ def get_status():
                 ActivityEntryOut(timestamp=e.timestamp, message=e.message, actor=e.actor)
                 for e in app_state.activity_log.recent()
             ],
+            pump_cooldown_remaining_s=app_state.pump_cooldown_remaining_s,
         )
 
 

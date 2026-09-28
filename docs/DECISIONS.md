@@ -96,7 +96,38 @@ of silently decided.
 - **Soil sensor calibration** (`SOIL_ADC_DRY` / `SOIL_ADC_WET`): placeholder
   values; every capacitive/resistive soil sensor needs per-unit calibration
   in air vs. water, so these are documented as needing a real calibration
-  pass rather than guessed at.
+  pass rather than guessed at. `sensors_read()` now also fills
+  `Reading.soil_raw` and `main.cpp` prints it to Serial every telemetry
+  cycle (`soil raw=<n> -> <pct>%`) - there was previously no way to see the
+  raw ADC value at all, only the (potentially wrong) computed percentage,
+  making calibration a guessing game.
+- **Pump cooldown is reported, not just enforced.** The cap/cooldown above
+  is silent by design at the protocol level - `RelayController::
+  applyCommand()` just declines to turn the pump on and reports it as off,
+  with no error, no flag, nothing distinguishing "refused due to cooldown"
+  from "the backend didn't actually ask for it." From the dashboard's
+  side, that's indistinguishable from the ordinary commanded/reported lag
+  every other relay has for a few seconds each telemetry cycle - except
+  it can persist for up to 90 seconds (30s run + 60s cooldown) instead of
+  resolving next cycle, which reads as the UI being stuck. Rather than
+  inferring "probably a cooldown" from timing on the backend (fragile -
+  nothing distinguishes a slow network hiccup from an active cooldown),
+  the firmware now reports the real number:
+  `RelayController::pumpCooldownRemainingSeconds()`, sent as
+  `pump_cooldown_remaining_s` in the telemetry payload, stored in
+  `AppState.pump_cooldown_remaining_s`, and returned on `GET /api/status`.
+  The dashboard shows "cooldown ~Xs" instead of generic "pending" for the
+  pump specifically only while that value is nonzero - every other relay's
+  "pending" behavior is unchanged.
+- **New field defaults to 0.0** (`TelemetryIn.pump_cooldown_remaining_s`),
+  so firmware from before this change still validates - not a breaking
+  wire-format change, just an addition.
+- **Not a live countdown.** The number is exactly what the firmware
+  measured at its last telemetry post (~every `TELEMETRY_INTERVAL_MS`,
+  20s), not interpolated client-side between polls - consistent with
+  every other "reported" value on this dashboard already only refreshing
+  on that same cadence. Adding client-side ticking for just this one field
+  would be a level of polish nothing else here has.
 
 ## Backend
 
