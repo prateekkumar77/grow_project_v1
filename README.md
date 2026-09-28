@@ -156,10 +156,10 @@ The live feed itself is in-memory only (an `ActivityLog` ring buffer
 capped at the last 20 entries, see `backend/activity_log.py`) and resets
 on backend restart, like the rest of `AppState` - but every entry is also
 durably written to the `activity_log` DB table (unbounded, never capped
-or reset) the moment it's recorded. **"download activity log .xlsx"**, next
-to the readings export button on the history tab, exports that complete
-table - not just the last 20 the live feed shows - the same way "download
-.xlsx" exports the full `readings` table.
+or reset) the moment it's recorded. **"download activity log"**, next to
+the "download sensor data" button on the history tab, exports that
+complete table - not just the last 20 the live feed shows - the same way
+"download sensor data" exports the full `readings` table.
 
 ## History charts
 
