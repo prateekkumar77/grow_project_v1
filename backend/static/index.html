@@ -1427,6 +1427,16 @@
     var tLo = tMin - tPad, tHi = tMax + tPad;
     var pLo = 0, pHi = 100;
 
+    function average(values) {
+      if (!values.length) return null;
+      return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+    }
+    var humidityVals = points.map(function (p) { return p.humidity; }).filter(function (v) { return v != null; });
+    var soilVals = points.map(function (p) { return p.soil_moisture; }).filter(function (v) { return v != null; });
+    var tempAvg = average(temps);
+    var humidityAvg = average(humidityVals);
+    var soilAvg = average(soilVals);
+
     function xPos(i) {
       return padL + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
     }
@@ -1491,6 +1501,25 @@
       });
     }
 
+    function addAverageLine(avg, yFn, color) {
+      if (avg == null) return;
+      var y = yFn(avg);
+      var line = svgEl("line", {
+        x1: padL, x2: width - padR, y1: y.toFixed(1), y2: y.toFixed(1),
+        stroke: color, "stroke-width": 1.5, "stroke-dasharray": "4 3", opacity: 0.55,
+      });
+      var title = svgEl("title", {});
+      title.textContent = "average: " + avg.toFixed(1);
+      line.appendChild(title);
+      svg.appendChild(line);
+    }
+
+    // Drawn before the data series so the dashed reference lines sit
+    // behind the actual line/dots rather than on top of them.
+    addAverageLine(tempAvg, yTemp, COLOR_TEMP);
+    addAverageLine(humidityAvg, yPct, COLOR_HUMIDITY);
+    addAverageLine(soilAvg, yPct, COLOR_SOIL);
+
     addSeries("temp_c", yTemp, COLOR_TEMP);
     addSeries("humidity", yPct, COLOR_HUMIDITY);
     addSeries("soil_moisture", yPct, COLOR_SOIL);
@@ -1509,14 +1538,18 @@
 
     var legend = document.createElement("div");
     legend.className = "chart-legend";
-    [["temperature", COLOR_TEMP], ["humidity", COLOR_HUMIDITY], ["soil moisture", COLOR_SOIL]].forEach(function (pair) {
+    [
+      ["temperature", COLOR_TEMP, tempAvg, "°c"],
+      ["humidity", COLOR_HUMIDITY, humidityAvg, "%"],
+      ["soil moisture", COLOR_SOIL, soilAvg, "%"],
+    ].forEach(function (pair) {
       var item = document.createElement("div");
       item.className = "item";
       var swatch = document.createElement("span");
       swatch.className = "swatch";
       swatch.style.background = pair[1];
       var label = document.createElement("span");
-      label.textContent = pair[0];
+      label.textContent = pair[0] + (pair[2] != null ? " (avg " + pair[2].toFixed(1) + pair[3] + ")" : "");
       item.appendChild(swatch);
       item.appendChild(label);
       legend.appendChild(item);

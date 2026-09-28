@@ -107,6 +107,8 @@ A second dashboard tab, **history**:
 - **Daily readings** — temp/humidity/soil moisture for a chosen UTC day,
   30-minute or 1-hour buckets. Temperature on the left axis (°C),
   humidity + soil moisture sharing the right (already the same unit, %).
+  Each series also gets a dashed horizontal line at its average over the
+  currently-loaded window, with the numeric average shown in the legend.
 - **Weekly averages** — same shape for a chosen UTC week, 6-hour buckets
   (28 points) — coarse enough to stay compact while keeping the intraday
   pattern visible.
