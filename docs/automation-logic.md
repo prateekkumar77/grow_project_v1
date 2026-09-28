@@ -115,10 +115,29 @@ latency to a page load the way an inline check would.
 
 When the dashboard puts the system in **manual**, the decision engine is
 not consulted at all. Relay commands come only from the last thing a human
-clicked on the dashboard (`POST /api/relay`). The only thing that can still
-override a manual command is the ESP32's own local safety logic (pump
-cap/cooldown, and the offline emergency-temperature floor) — never another
-piece of backend logic.
+clicked on the dashboard (`POST /api/relay`). The other thing that can
+still override a manual command is the ESP32's own local safety logic
+(pump cap/cooldown, and the offline emergency-temperature floor).
+
+**Pump is the one exception with its own follow-up rule.** Manual mode has
+no concept of "re-arming" a relay — whatever was last clicked just sits
+there and gets resent every cycle, forever, until clicked again. That's
+fine for fan/ac/light/exhaust, but it's a problem for the pump specifically,
+because the firmware's own 30s-run/60s-cooldown safety cap (see "What the
+firmware does entirely on its own" below) can force it off *without ever
+telling the backend why*. Left alone, the backend would keep resending the
+same stale "on" command, the firmware would honor it again the instant the
+cooldown clears, and the pump would settle into a perpetual 30-seconds-on/
+60-seconds-off cycle that never resolves without a human noticing and
+clicking "off." So: in manual mode only, the moment the backend learns
+(via the telemetry payload's `pump_cooldown_remaining_s`) that the pump
+was just cap-cut while it was still commanding "on," it cancels that
+standing command rather than leaving it in place. Turning the pump back on
+after that always takes a fresh `POST /api/relay` — a real, present-tense
+click — never an automatic resumption. **Auto mode is entirely unaffected**
+by this: its decision engine already re-evaluates the pump every cycle
+from live soil-moisture data, so there's no "stale command" to cancel in
+the first place, and it keeps re-arming the pump exactly as it always has.
 
 Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
 (default 30) of no dashboard activity, so a manual session can't be

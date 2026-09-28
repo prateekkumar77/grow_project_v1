@@ -128,6 +128,27 @@ of silently decided.
   every other "reported" value on this dashboard already only refreshing
   on that same cadence. Adding client-side ticking for just this one field
   would be a level of polish nothing else here has.
+- **Manual mode's pump command is cancelled, not re-armed, by a cap
+  cutoff - and this is backend logic, not firmware logic.** Once
+  `pump_cooldown_remaining_s` existed (see above), it became possible to
+  fix a real usability problem it had only exposed, not caused: manual
+  mode has no concept of re-evaluating a command, so a cap-triggered
+  cutoff followed by a still-standing "on" command meant the firmware
+  would honor that same stale command again the instant its cooldown
+  cleared, forever, in a 30s-on/60s-off loop that never resolves without a
+  human noticing and clicking "off." `post_telemetry`'s manual-mode branch
+  now checks `payload.pump_cooldown_remaining_s > 0 and commanded.pump`
+  and clears `commanded.pump` to `False` right there - so a fresh
+  `POST /api/relay` is always required to run it again. This is
+  deliberately backend-side, not a firmware change: the firmware has no
+  concept of `mode` at all (it only ever receives a per-relay boolean and
+  applies its own cap/cooldown safety net on top, regardless of what put
+  that boolean there), and the backend is where "manual" already means
+  something specific. Auto mode's branch is untouched - its decision
+  engine already re-evaluates the pump from live soil-moisture data every
+  cycle, so there's no stale command for it to accumulate in the first
+  place, and it keeps re-arming the pump across a cooldown exactly as
+  before this change.
 
 ## Backend
 
