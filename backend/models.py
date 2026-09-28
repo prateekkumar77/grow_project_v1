@@ -112,6 +112,9 @@ class HaStatus(BaseModel):
 class ActivityEntryOut(BaseModel):
     timestamp: datetime
     message: str
+    # Username of whoever triggered a manual dashboard action, or "auto"
+    # for anything the decision engine or a schedule did on its own.
+    actor: str
 
 
 class StatusOut(BaseModel):
@@ -152,3 +155,17 @@ class ReadingRow(SQLModel, table=True):
     reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str
+
+
+class ActivityLogRow(SQLModel, table=True):
+    """Durable, unbounded history of every activity-log entry - the
+    in-memory ActivityLog (activity_log.py) only ever keeps the most
+    recent 20 for the dashboard feed; this table is the complete record
+    behind the "export activity log" button."""
+
+    __tablename__ = "activity_log"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    message: str
+    actor: str

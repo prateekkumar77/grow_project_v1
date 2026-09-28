@@ -322,13 +322,19 @@ of silently decided.
 
 ## Activity log
 
-- **In-memory ring buffer (`ActivityLog`, capped at 20), not a DB table.**
-  This is a glanceable "what just happened" feed, not an audit trail that
-  needs to survive a restart or be queryable by date range - `ReadingRow`
-  already exists for anything that needs real persistence and export.
-  Matches the rest of `AppState`'s volatility: mode, schedule config, and
-  now this all reset together on restart, rather than half of the runtime
-  state persisting and half not.
+- **Two tiers: an in-memory ring buffer for the live feed, a DB table for
+  the full history.** `ActivityLog` (capped at 20) still backs the
+  dashboard's "recent activity" panel and still resets on restart, same as
+  the rest of `AppState`'s volatility (mode, schedule config, etc.) - it
+  stays a glanceable "what just happened" view, not an archive. The
+  complete, unbounded history now lives separately in the `activity_log`
+  DB table (`models.ActivityLogRow`), written via `ActivityLog.on_record` -
+  a hook `main.py` sets once, fired for every entry the ring buffer
+  records, even ones it later evicts. This keeps `activity_log.py` itself
+  free of any DB dependency (same "pure module, DB access only in main.py"
+  split as decision_engine.py/light_schedule.py/exhaust_schedule.py)
+  while still giving the "export activity log" button something complete
+  to export.
 - **Log only actual transitions, never every telemetry cycle regardless of
   change.** `RelayActivityTracker` (in `activity_log.py`) keeps the last
   logged value per relay and only records an entry when it differs from
@@ -355,15 +361,27 @@ of silently decided.
   more field (`activity`) on the same response the dashboard already polls
   every 5s, consistent with how light/exhaust status work. No separate
   poll loop, no separate loading state in the frontend.
-- **Manual and auto-triggered changes share one code path
-  (`RelayActivityTracker.update()`/`.note()`)** - the log doesn't
-  distinguish "a human clicked this" from "the decision engine/schedule
-  did this automatically"; it just states what changed. Adding that
-  distinction (or attributing manual actions to the authenticated
-  username, now that dashboard auth exists) is a reasonable future
-  addition but wasn't asked for - keeping the message format to exactly
-  what was requested (`<relay> on`/`off`, `<mode> mode on`, `light/exhaust
-  schedule ...`) avoided guessing at a richer format nobody asked for yet.
+- **Every entry carries an `actor`**: the dashboard username for a manual
+  action (`request.state.user.username`, already available from the auth
+  middleware on every non-telemetry route) or the literal string `"auto"`
+  (`activity_log.AUTO_ACTOR`) for anything `post_telemetry` did on its own
+  - the decision engine's fan/ac/pump escalation, or a light/exhaust
+  schedule crossing its on/off boundary. `RelayActivityTracker.note()`/
+  `.update()` and `ActivityLog.record()` both take `actor` as a required
+  argument rather than defaulting it, so a new call site can't forget to
+  decide who's responsible. `POST /api/telemetry` is the only route with
+  no authenticated user to attribute to, and it's also the only place
+  that logs `auto` - every other route always has a `request.state.user`
+  by the time its handler runs.
+- **Export mirrors the existing readings export exactly**: same pattern
+  (`export_activity_log_to_excel(session)` in `excel_export.py`, a `POST`
+  endpoint returning the generated file via `FileResponse`, a button next
+  to the existing one on the history tab), same admin-only enforcement
+  (inherited for free from the existing GET/POST role-check middleware -
+  no new authorization code needed). Deliberately no scheduled background
+  export for this one (unlike `EXPORT_INTERVAL_MINUTES` for readings) -
+  the activity log is small and reviewed occasionally, not something that
+  needs a fresh copy on disk every hour.
 
 - **Aggregation happens server-side, in Python, not in SQL or client-side**:
   `backend/chart_data.py`'s `bucket_by_step()` fetches raw rows for the

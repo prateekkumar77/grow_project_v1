@@ -137,20 +137,29 @@ longer than the cycle itself doesn't mean anything.
 ## Activity log
 
 The dashboard has a scrollable "recent activity" panel showing the last 20
-notable actions, newest first, each with a timestamp: mode switches
-(`auto mode on`/`manual mode on`), relay on/off transitions for every
-relay (`fan on`, `pump off`, `light on`, `exhaust off`, `ac on` - whether
-triggered by a manual dashboard click or the decision engine/schedule),
-light/exhaust schedule toggles and reconfiguration (`light schedule on`,
-`light schedule set: 18h on/day`, `exhaust schedule set: run 1m every
-5m`), and data exports.
+notable actions, newest first, each with a timestamp and who did it:
+mode switches (`auto mode on`/`manual mode on`), relay on/off transitions
+for every relay (`fan on`, `pump off`, `light on`, `exhaust off`, `ac on`
+- whether triggered by a manual dashboard click or the decision
+engine/schedule), light/exhaust schedule toggles and reconfiguration
+(`light schedule on`, `light schedule set: 18h on/day`, `exhaust schedule
+set: run 1m every 5m`), and data exports. Every entry shows its actor -
+the dashboard username for a manual action, or `<auto>` for anything the
+decision engine or a schedule did on its own - rendered like `<admin>` or
+`<auto>` next to the message.
 
 Only actual transitions are logged - a relay holding steady across
 telemetry cycles never adds an entry, so the feed doesn't fill up with
-repeats of the same state. It's in-memory only (an `ActivityLog` ring
-buffer capped at the last 20 entries, see `backend/activity_log.py`),
-piggybacking on the existing 5s `/api/status` poll rather than its own
-endpoint - like the rest of `AppState`, it resets on backend restart.
+repeats of the same state.
+
+The live feed itself is in-memory only (an `ActivityLog` ring buffer
+capped at the last 20 entries, see `backend/activity_log.py`) and resets
+on backend restart, like the rest of `AppState` - but every entry is also
+durably written to the `activity_log` DB table (unbounded, never capped
+or reset) the moment it's recorded. **"download activity log .xlsx"**, next
+to the readings export button on the history tab, exports that complete
+table - not just the last 20 the live feed shows - the same way "download
+.xlsx" exports the full `readings` table.
 
 ## History charts
 
@@ -244,6 +253,7 @@ pio run --target upload
 | `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
 | `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
+| `POST /api/activity/export` | Dashboard/manual | export the complete `activity_log` table (not just the last 20) and return the `.xlsx` file itself |
 | `GET /api/me` | Dashboard | who's currently authenticated (`username`, `role`) |
 
 ## Dashboard access / roles

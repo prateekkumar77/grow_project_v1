@@ -14,15 +14,21 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
 import ha_client
-from activity_log import ActivityLog, RelayActivityTracker
+from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
 from exhaust_schedule import is_exhaust_on
-from excel_export import EXPORT_PATH, export_readings_to_excel
+from excel_export import (
+    ACTIVITY_EXPORT_PATH,
+    EXPORT_PATH,
+    export_activity_log_to_excel,
+    export_readings_to_excel,
+)
 from light_schedule import is_light_on
 from models import (
     ActivityEntryOut,
+    ActivityLogRow,
     ExhaustManualIn,
     ExhaustScheduleIn,
     ExhaustStatus,
@@ -125,7 +131,25 @@ class AppState:
         self.relay_activity = RelayActivityTracker(self.activity_log)
 
 
+def _persist_activity_entry(entry) -> None:
+    """Wired to app_state.activity_log.on_record below. The in-memory
+    ActivityLog only ever keeps the last 20 entries for the dashboard feed;
+    every entry it records - even ones it will later evict - is durably
+    written here to the activity_log table, which is the complete history
+    behind the "export activity log" button. Opens its own short-lived
+    session rather than threading one through every call site, since this
+    fires from deep inside activity_log.record() (itself often called
+    while app_state.lock is held), not from a request's own DB session."""
+    try:
+        with Session(engine) as session:
+            session.add(ActivityLogRow(timestamp=entry.timestamp, message=entry.message, actor=entry.actor))
+            session.commit()
+    except Exception:  # noqa: BLE001 - a failed write must never crash a request
+        logger.exception("Failed to persist activity log entry")
+
+
 app_state = AppState()
+app_state.activity_log.on_record = _persist_activity_entry
 app = FastAPI(title="Grow Tent Controller")
 
 # Paths the ESP32 firmware itself calls - it sends no Authorization header
@@ -286,7 +310,7 @@ def post_telemetry(
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
 
         app_state.commanded_relay_state = commanded
-        app_state.relay_activity.update(commanded)
+        app_state.relay_activity.update(commanded, AUTO_ACTOR)
 
         mode = app_state.mode
 
@@ -349,7 +373,7 @@ def get_status():
             exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
             activity=[
-                ActivityEntryOut(timestamp=e.timestamp, message=e.message)
+                ActivityEntryOut(timestamp=e.timestamp, message=e.message, actor=e.actor)
                 for e in app_state.activity_log.recent()
             ],
         )
@@ -474,22 +498,22 @@ def get_week_chart(
 
 
 @app.post("/api/mode")
-def set_mode(payload: ModeIn):
+def set_mode(payload: ModeIn, request: Request):
     with app_state.lock:
         if payload.mode != app_state.mode:
-            app_state.activity_log.record(f"{payload.mode} mode on")
+            app_state.activity_log.record(f"{payload.mode} mode on", request.state.user.username)
         app_state.mode = payload.mode
         app_state.last_manual_activity = datetime.utcnow()
         return {"mode": app_state.mode, "relay_state": app_state.commanded_relay_state.model_dump()}
 
 
 @app.post("/api/relay")
-def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
+def set_relay(payload: RelayIn, background_tasks: BackgroundTasks, request: Request):
     with app_state.lock:
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
-        app_state.relay_activity.update(app_state.commanded_relay_state)
+        app_state.relay_activity.update(app_state.commanded_relay_state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
         result = {
             "relay": payload.relay,
@@ -507,34 +531,35 @@ def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/light/schedule", response_model=LightStatus)
-def set_light_schedule(payload: LightScheduleIn):
+def set_light_schedule(payload: LightScheduleIn, request: Request):
     """Master switch for the light: enabling the schedule hands control to
     is_light_on() (independent of the environmental auto/manual `mode`);
     disabling it falls back to whatever was last set via
     /api/light/manual. on_hours is always saved even when the schedule is
     currently off, so it's ready as soon as it's turned on."""
     with app_state.lock:
+        actor = request.state.user.username
         if payload.enabled != app_state.light_schedule_enabled:
-            app_state.activity_log.record(f"light schedule {'on' if payload.enabled else 'off'}")
+            app_state.activity_log.record(f"light schedule {'on' if payload.enabled else 'off'}", actor)
         if payload.on_hours != app_state.light_on_hours:
-            app_state.activity_log.record(f"light schedule set: {payload.on_hours}h on/day")
+            app_state.activity_log.record(f"light schedule set: {payload.on_hours}h on/day", actor)
         app_state.light_schedule_enabled = payload.enabled
         app_state.light_on_hours = payload.on_hours
         return _light_status(datetime.utcnow())
 
 
 @app.post("/api/light/manual", response_model=LightStatus)
-def set_light_manual(payload: LightManualIn):
+def set_light_manual(payload: LightManualIn, request: Request):
     with app_state.lock:
         if app_state.light_schedule_enabled:
             raise HTTPException(status_code=409, detail="light schedule is enabled")
-        app_state.relay_activity.note("light", payload.state)
+        app_state.relay_activity.note("light", payload.state, request.state.user.username)
         app_state.light_commanded = payload.state
         return _light_status(datetime.utcnow())
 
 
 @app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
-def set_exhaust_schedule(payload: ExhaustScheduleIn):
+def set_exhaust_schedule(payload: ExhaustScheduleIn, request: Request):
     """Master switch for exhaust: enabling the schedule hands control to
     is_exhaust_on() (independent of the environmental auto/manual `mode`
     and of any sensor reading); disabling it falls back to whatever was
@@ -542,14 +567,15 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn):
     always saved even when the schedule is currently off, so they're
     ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
     with app_state.lock:
+        actor = request.state.user.username
         if payload.enabled != app_state.exhaust_schedule_enabled:
-            app_state.activity_log.record(f"exhaust schedule {'on' if payload.enabled else 'off'}")
+            app_state.activity_log.record(f"exhaust schedule {'on' if payload.enabled else 'off'}", actor)
         if (
             payload.run_minutes != app_state.exhaust_run_minutes
             or payload.interval_minutes != app_state.exhaust_interval_minutes
         ):
             app_state.activity_log.record(
-                f"exhaust schedule set: run {payload.run_minutes}m every {payload.interval_minutes}m"
+                f"exhaust schedule set: run {payload.run_minutes}m every {payload.interval_minutes}m", actor
             )
         app_state.exhaust_schedule_enabled = payload.enabled
         app_state.exhaust_run_minutes = payload.run_minutes
@@ -558,23 +584,36 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn):
 
 
 @app.post("/api/exhaust/manual", response_model=ExhaustStatus)
-def set_exhaust_manual(payload: ExhaustManualIn):
+def set_exhaust_manual(payload: ExhaustManualIn, request: Request):
     with app_state.lock:
         if app_state.exhaust_schedule_enabled:
             raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
-        app_state.relay_activity.note("exhaust", payload.state)
+        app_state.relay_activity.note("exhaust", payload.state, request.state.user.username)
         app_state.exhaust_commanded = payload.state
         return _exhaust_status(datetime.utcnow())
 
 
 @app.post("/api/export")
-def trigger_export(session: Session = Depends(get_session)):
+def trigger_export(request: Request, session: Session = Depends(get_session)):
     export_readings_to_excel(session)
-    app_state.activity_log.record("data exported")
+    app_state.activity_log.record("data exported", request.state.user.username)
     return FileResponse(
         EXPORT_PATH,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename="readings_export.xlsx",
+    )
+
+
+@app.post("/api/activity/export")
+def trigger_activity_export(request: Request, session: Session = Depends(get_session)):
+    """Exports the complete activity_log table - every entry ever recorded,
+    not just the last 20 the dashboard feed shows."""
+    export_activity_log_to_excel(session)
+    app_state.activity_log.record("activity log exported", request.state.user.username)
+    return FileResponse(
+        ACTIVITY_EXPORT_PATH,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="activity_log_export.xlsx",
     )
 
 
