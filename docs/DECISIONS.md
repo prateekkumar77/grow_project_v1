@@ -96,7 +96,38 @@ of silently decided.
 - **Soil sensor calibration** (`SOIL_ADC_DRY` / `SOIL_ADC_WET`): placeholder
   values; every capacitive/resistive soil sensor needs per-unit calibration
   in air vs. water, so these are documented as needing a real calibration
-  pass rather than guessed at.
+  pass rather than guessed at. `sensors_read()` now also fills
+  `Reading.soil_raw` and `main.cpp` prints it to Serial every telemetry
+  cycle (`soil raw=<n> -> <pct>%`) - there was previously no way to see the
+  raw ADC value at all, only the (potentially wrong) computed percentage,
+  making calibration a guessing game.
+- **Pump cooldown is reported, not just enforced.** The cap/cooldown above
+  is silent by design at the protocol level - `RelayController::
+  applyCommand()` just declines to turn the pump on and reports it as off,
+  with no error, no flag, nothing distinguishing "refused due to cooldown"
+  from "the backend didn't actually ask for it." From the dashboard's
+  side, that's indistinguishable from the ordinary commanded/reported lag
+  every other relay has for a few seconds each telemetry cycle - except
+  it can persist for up to 90 seconds (30s run + 60s cooldown) instead of
+  resolving next cycle, which reads as the UI being stuck. Rather than
+  inferring "probably a cooldown" from timing on the backend (fragile -
+  nothing distinguishes a slow network hiccup from an active cooldown),
+  the firmware now reports the real number:
+  `RelayController::pumpCooldownRemainingSeconds()`, sent as
+  `pump_cooldown_remaining_s` in the telemetry payload, stored in
+  `AppState.pump_cooldown_remaining_s`, and returned on `GET /api/status`.
+  The dashboard shows "cooldown ~Xs" instead of generic "pending" for the
+  pump specifically only while that value is nonzero - every other relay's
+  "pending" behavior is unchanged.
+- **New field defaults to 0.0** (`TelemetryIn.pump_cooldown_remaining_s`),
+  so firmware from before this change still validates - not a breaking
+  wire-format change, just an addition.
+- **Not a live countdown.** The number is exactly what the firmware
+  measured at its last telemetry post (~every `TELEMETRY_INTERVAL_MS`,
+  20s), not interpolated client-side between polls - consistent with
+  every other "reported" value on this dashboard already only refreshing
+  on that same cadence. Adding client-side ticking for just this one field
+  would be a level of polish nothing else here has.
 
 ## Backend
 
@@ -320,7 +351,68 @@ of silently decided.
   inventing a different shape for exhaust keeps "who owns this relay
   right now" consistent across every schedule-driven relay in the app.
 
-## History charts
+## Activity log
+
+- **Two tiers: an in-memory ring buffer for the live feed, a DB table for
+  the full history.** `ActivityLog` (capped at 20) still backs the
+  dashboard's "recent activity" panel and still resets on restart, same as
+  the rest of `AppState`'s volatility (mode, schedule config, etc.) - it
+  stays a glanceable "what just happened" view, not an archive. The
+  complete, unbounded history now lives separately in the `activity_log`
+  DB table (`models.ActivityLogRow`), written via `ActivityLog.on_record` -
+  a hook `main.py` sets once, fired for every entry the ring buffer
+  records, even ones it later evicts. This keeps `activity_log.py` itself
+  free of any DB dependency (same "pure module, DB access only in main.py"
+  split as decision_engine.py/light_schedule.py/exhaust_schedule.py)
+  while still giving the "export activity log" button something complete
+  to export.
+- **Log only actual transitions, never every telemetry cycle regardless of
+  change.** `RelayActivityTracker` (in `activity_log.py`) keeps the last
+  logged value per relay and only records an entry when it differs from
+  the new one. Without this, the feed would fill with a repeated "fan on"
+  every ~20s telemetry cycle for as long as the fan happened to already be
+  on, drowning out anything that actually happened.
+- **`RelayActivityTracker` stores plain booleans in a dict, not a
+  `RelayState` object.** The first implementation stored the last
+  `RelayState` instance directly as the comparison baseline, and had a
+  real bug caught during live verification: `main.py`'s `POST /api/relay`
+  handler does `setattr(app_state.commanded_relay_state, ...)`, mutating
+  that object in place - since the tracker's baseline was the *same
+  object* (not a copy), that mutation silently updated the baseline too,
+  so the next diff compared the object to itself and never logged
+  anything again after the first manual relay command. Switching the
+  tracker to hold only independent `bool` values per relay (which can't be
+  mutated out from under it) fixes the whole bug class, not just the one
+  symptom - a `model_copy()` on write would have also fixed this specific
+  case but left the same trap for the next caller that hands the tracker a
+  live, mutable object. Covered by
+  `test_survives_in_place_mutation_of_the_object_passed_to_update` in
+  `test_activity_log.py`, which reproduces the exact scenario.
+- **Piggybacks on `GET /api/status` rather than its own endpoint** - one
+  more field (`activity`) on the same response the dashboard already polls
+  every 5s, consistent with how light/exhaust status work. No separate
+  poll loop, no separate loading state in the frontend.
+- **Every entry carries an `actor`**: the dashboard username for a manual
+  action (`request.state.user.username`, already available from the auth
+  middleware on every non-telemetry route) or the literal string `"auto"`
+  (`activity_log.AUTO_ACTOR`) for anything `post_telemetry` did on its own
+  - the decision engine's fan/ac/pump escalation, or a light/exhaust
+  schedule crossing its on/off boundary. `RelayActivityTracker.note()`/
+  `.update()` and `ActivityLog.record()` both take `actor` as a required
+  argument rather than defaulting it, so a new call site can't forget to
+  decide who's responsible. `POST /api/telemetry` is the only route with
+  no authenticated user to attribute to, and it's also the only place
+  that logs `auto` - every other route always has a `request.state.user`
+  by the time its handler runs.
+- **Export mirrors the existing readings export exactly**: same pattern
+  (`export_activity_log_to_excel(session)` in `excel_export.py`, a `POST`
+  endpoint returning the generated file via `FileResponse`, a button next
+  to the existing one on the history tab), same admin-only enforcement
+  (inherited for free from the existing GET/POST role-check middleware -
+  no new authorization code needed). Deliberately no scheduled background
+  export for this one (unlike `EXPORT_INTERVAL_MINUTES` for readings) -
+  the activity log is small and reviewed occasionally, not something that
+  needs a fresh copy on disk every hour.
 
 - **Aggregation happens server-side, in Python, not in SQL or client-side**:
   `backend/chart_data.py`'s `bucket_by_step()` fetches raw rows for the
@@ -404,6 +496,88 @@ of silently decided.
   step or static route needed. The file is still also written to
   `EXPORT_PATH` on disk as before, so the scheduled background export
   (`_run_export`) and manual/API triggers behave identically either way.
+
+## Dashboard authentication / roles
+
+- **HTTP Basic Auth via a custom `@app.middleware("http")` function, not
+  FastAPI's `HTTPBasic` security class.** Middleware runs at the ASGI level
+  and wraps every request in one place, including the `StaticFiles` mount
+  (`/static`) and the `index()` route serving `index.html` - a
+  `Depends(...)`-based approach would have needed adding to all 13+
+  existing route functions individually and still wouldn't cover the
+  static mount without extra wiring. One function, one place to reason
+  about, matches how `AUTO_REVERT`/offline-detection are also handled as
+  cross-cutting concerns rather than per-route logic.
+- **No new dependency** - `base64`/`secrets` (both standard library) are
+  enough for Basic Auth decode + constant-time comparison. This matches
+  the dashboard's own established stance (single HTML file, no build step,
+  no CDN scripts) - the auth mechanism follows the same "reach for what's
+  already there before adding a package" bias as the rest of the project,
+  rather than pulling in `python-jose`/`passlib`/session middleware for a
+  two-role, no-registration-flow system.
+- **Users live in `.env` as a JSON array** (`DASHBOARD_USERS`), not a DB
+  table - there's no user-management UI, no self-service signup, and the
+  set of people who should have dashboard access changes about as often as
+  `HA_TOKEN` does. A `.env` entry is one line to add/rotate/remove and
+  needs no migration, consistent with every other piece of config in this
+  project living in the environment rather than the database.
+- **Plaintext passwords in `.env`.** Explicitly accepted, not an oversight
+  - it's the same trust model already used for `HA_TOKEN`: whoever can read
+  the backend's `.env` already has full control over the tent (HA access,
+  DB access, the container itself), so hashing dashboard passwords would
+  protect against a threat model (an attacker reading `.env` but not
+  anything else in it) that doesn't hold here. `.env` is gitignored and
+  never leaves the host, same as always.
+- **Fail closed, not fail open.** An empty, unset, or malformed
+  `DASHBOARD_USERS` means `auth.DASHBOARD_USERS` parses to `{}`, and
+  `authenticate()` rejects every login against an empty user map - there is
+  no shipped default admin/admin credential anywhere in code. A typo'd
+  single entry is dropped with a logged warning rather than taking down
+  every other configured user, but a totally broken/missing config takes
+  down the whole dashboard rather than silently granting access.
+- **`POST /api/telemetry` is the one unauthenticated route**, carved out by
+  path in the middleware before any auth check runs. The ESP32 firmware
+  has no notion of credentials and sends no `Authorization` header at all;
+  requiring auth there would just break every telemetry post with no way
+  for the firmware to satisfy it. Every other route, including the
+  dashboard's own static assets, requires valid Basic Auth.
+- **The GET/HEAD/OPTIONS vs. everything-else boundary is the entire role
+  check** - a viewer can call any read-only endpoint (status, history,
+  charts, profile, `/api/me`) but gets a flat `403` from the middleware on
+  any other HTTP method, before the request even reaches the route
+  handler. This means the boundary is enforced once, centrally, rather
+  than needing every mutating endpoint to remember to check
+  `request.state.user.role == "admin"` itself - a new `POST` route added
+  later is protected automatically just by not being in `PUBLIC_PATHS`,
+  with no route-level code required.
+- **The dashboard UI's viewer lockdown (disabled buttons, a role badge, a
+  `body.viewer-role` CSS rule making every control visually and
+  `pointer-events: none`-inert) is a UX courtesy, not the actual
+  boundary.** `GET /api/me` tells the frontend which role it's showing
+  controls for, but the real enforcement is the 403 above - a viewer
+  opening devtools and firing a raw `fetch()` at `/api/relay` still gets
+  rejected server-side (verified live: a viewer's direct `POST
+  /api/relay` returns `403` even with the button disabled and hidden
+  behind `pointer-events: none`).
+- **Timing-safe comparison, including for unknown usernames.**
+  `auth.authenticate()` always runs `secrets.compare_digest()` against
+  *some* password - a real one for a known username, an empty string for
+  an unknown one - so a wrong password and a wrong username take
+  indistinguishable time. Without this, response timing could leak which
+  usernames in `DASHBOARD_USERS` actually exist.
+- **No session/expiry mechanism, accepted as part of choosing Basic Auth.**
+  There's no session token, cookie, or timer anywhere in `auth.py` or the
+  middleware - every request is authenticated independently against
+  `DASHBOARD_USERS`, every time. "Staying logged in" is entirely the
+  browser's own credential cache for the origin, which this app has no
+  visibility into or control over: no server-enforced re-login interval,
+  and no logout endpoint could force it either (there's no session to
+  invalidate). Rotating a password in `DASHBOARD_USERS` takes effect
+  immediately on the next request either way, so it's not a security gap
+  the way a stale session token would be - it's a UX tradeoff, made
+  consciously to keep this dependency-free rather than add cookie/token
+  session handling for a two-role dashboard with no self-service login
+  flow.
 
 ## Frontend
 

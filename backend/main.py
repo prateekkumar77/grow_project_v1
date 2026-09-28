@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import logging
 import os
@@ -5,19 +7,28 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
+import auth
 import ha_client
+from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
 from chart_data import bucket_by_step
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
 from exhaust_schedule import is_exhaust_on
-from excel_export import EXPORT_PATH, export_readings_to_excel
+from excel_export import (
+    ACTIVITY_EXPORT_PATH,
+    EXPORT_PATH,
+    export_activity_log_to_excel,
+    export_readings_to_excel,
+)
 from light_schedule import is_light_on
 from models import (
+    ActivityEntryOut,
+    ActivityLogRow,
     ExhaustManualIn,
     ExhaustScheduleIn,
     ExhaustStatus,
@@ -82,6 +93,9 @@ class AppState:
         self.last_seen: Optional[datetime] = None
         self.latest_reading: Optional[SensorReading] = None
         self.last_manual_activity: Optional[datetime] = None
+        # 0 unless the firmware is currently refusing a commanded pump-on
+        # due to its own post-cap cooldown - see post_telemetry.
+        self.pump_cooldown_remaining_s: float = 0.0
         # The AC has no physical relay - it's controlled entirely through
         # Home Assistant. This tracks the last state we successfully
         # confirmed HA applied, so /api/status can report real AC state
@@ -110,10 +124,76 @@ class AppState:
         # until the first check completes.
         self.ha_reachable: Optional[bool] = None
         self.ha_last_checked: Optional[datetime] = None
+        # Last 20 notable actions, for the dashboard's activity feed.
+        self.activity_log = ActivityLog()
+        # Tracks each relay's last-logged value so only actual on/off
+        # transitions get recorded (auto-mode decision-engine changes,
+        # manual /api/relay commands, or a light/exhaust schedule crossing
+        # its on/off boundary) - never every telemetry cycle regardless of
+        # whether anything changed.
+        self.relay_activity = RelayActivityTracker(self.activity_log)
+
+
+def _persist_activity_entry(entry) -> None:
+    """Wired to app_state.activity_log.on_record below. The in-memory
+    ActivityLog only ever keeps the last 20 entries for the dashboard feed;
+    every entry it records - even ones it will later evict - is durably
+    written here to the activity_log table, which is the complete history
+    behind the "export activity log" button. Opens its own short-lived
+    session rather than threading one through every call site, since this
+    fires from deep inside activity_log.record() (itself often called
+    while app_state.lock is held), not from a request's own DB session."""
+    try:
+        with Session(engine) as session:
+            session.add(ActivityLogRow(timestamp=entry.timestamp, message=entry.message, actor=entry.actor))
+            session.commit()
+    except Exception:  # noqa: BLE001 - a failed write must never crash a request
+        logger.exception("Failed to persist activity log entry")
 
 
 app_state = AppState()
+app_state.activity_log.on_record = _persist_activity_entry
 app = FastAPI(title="Grow Tent Controller")
+
+# Paths the ESP32 firmware itself calls - it sends no Authorization header
+# at all, so these must stay reachable with no credentials.
+PUBLIC_PATHS = {"/api/telemetry"}
+# Safe/read-only HTTP methods a viewer role is allowed to use anywhere else.
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _unauthorized(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={"detail": message},
+        headers={"WWW-Authenticate": 'Basic realm="grow-tent-dashboard"'},
+    )
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Basic "):
+        return _unauthorized("Missing credentials")
+
+    try:
+        decoded = base64.b64decode(auth_header[len("Basic "):]).decode("utf-8")
+        username, _, password = decoded.partition(":")
+    except (binascii.Error, UnicodeDecodeError):
+        return _unauthorized("Malformed credentials")
+
+    user = auth.authenticate(auth.DASHBOARD_USERS, username, password)
+    if user is None:
+        return _unauthorized("Invalid username or password")
+
+    if request.method not in SAFE_METHODS and user.role != "admin":
+        return JSONResponse(status_code=403, content={"detail": "Viewer role cannot perform this action"})
+
+    request.state.user = user
+    return await call_next(request)
 
 
 def get_session():
@@ -202,6 +282,7 @@ def post_telemetry(
         app_state.light_reported = payload.relay_state.light
         app_state.exhaust_reported = payload.relay_state.exhaust
         app_state.latest_reading = reading
+        app_state.pump_cooldown_remaining_s = payload.pump_cooldown_remaining_s
 
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
@@ -233,6 +314,7 @@ def post_telemetry(
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
 
         app_state.commanded_relay_state = commanded
+        app_state.relay_activity.update(commanded, AUTO_ACTOR)
 
         mode = app_state.mode
 
@@ -294,7 +376,21 @@ def get_status():
             light=_light_status(now),
             exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
+            activity=[
+                ActivityEntryOut(timestamp=e.timestamp, message=e.message, actor=e.actor)
+                for e in app_state.activity_log.recent()
+            ],
+            pump_cooldown_remaining_s=app_state.pump_cooldown_remaining_s,
         )
+
+
+@app.get("/api/me")
+def get_me(request: Request):
+    """Who the dashboard is currently talking to - lets the frontend show a
+    role badge and lock down admin-only controls for a viewer without
+    guessing from response codes."""
+    user = request.state.user
+    return {"username": user.username, "role": user.role}
 
 
 @app.get("/api/profile")
@@ -407,19 +503,22 @@ def get_week_chart(
 
 
 @app.post("/api/mode")
-def set_mode(payload: ModeIn):
+def set_mode(payload: ModeIn, request: Request):
     with app_state.lock:
+        if payload.mode != app_state.mode:
+            app_state.activity_log.record(f"{payload.mode} mode on", request.state.user.username)
         app_state.mode = payload.mode
         app_state.last_manual_activity = datetime.utcnow()
         return {"mode": app_state.mode, "relay_state": app_state.commanded_relay_state.model_dump()}
 
 
 @app.post("/api/relay")
-def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
+def set_relay(payload: RelayIn, background_tasks: BackgroundTasks, request: Request):
     with app_state.lock:
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
+        app_state.relay_activity.update(app_state.commanded_relay_state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
         result = {
             "relay": payload.relay,
@@ -437,29 +536,35 @@ def set_relay(payload: RelayIn, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/light/schedule", response_model=LightStatus)
-def set_light_schedule(payload: LightScheduleIn):
+def set_light_schedule(payload: LightScheduleIn, request: Request):
     """Master switch for the light: enabling the schedule hands control to
     is_light_on() (independent of the environmental auto/manual `mode`);
     disabling it falls back to whatever was last set via
     /api/light/manual. on_hours is always saved even when the schedule is
     currently off, so it's ready as soon as it's turned on."""
     with app_state.lock:
+        actor = request.state.user.username
+        if payload.enabled != app_state.light_schedule_enabled:
+            app_state.activity_log.record(f"light schedule {'on' if payload.enabled else 'off'}", actor)
+        if payload.on_hours != app_state.light_on_hours:
+            app_state.activity_log.record(f"light schedule set: {payload.on_hours}h on/day", actor)
         app_state.light_schedule_enabled = payload.enabled
         app_state.light_on_hours = payload.on_hours
         return _light_status(datetime.utcnow())
 
 
 @app.post("/api/light/manual", response_model=LightStatus)
-def set_light_manual(payload: LightManualIn):
+def set_light_manual(payload: LightManualIn, request: Request):
     with app_state.lock:
         if app_state.light_schedule_enabled:
             raise HTTPException(status_code=409, detail="light schedule is enabled")
+        app_state.relay_activity.note("light", payload.state, request.state.user.username)
         app_state.light_commanded = payload.state
         return _light_status(datetime.utcnow())
 
 
 @app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
-def set_exhaust_schedule(payload: ExhaustScheduleIn):
+def set_exhaust_schedule(payload: ExhaustScheduleIn, request: Request):
     """Master switch for exhaust: enabling the schedule hands control to
     is_exhaust_on() (independent of the environmental auto/manual `mode`
     and of any sensor reading); disabling it falls back to whatever was
@@ -467,6 +572,16 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn):
     always saved even when the schedule is currently off, so they're
     ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
     with app_state.lock:
+        actor = request.state.user.username
+        if payload.enabled != app_state.exhaust_schedule_enabled:
+            app_state.activity_log.record(f"exhaust schedule {'on' if payload.enabled else 'off'}", actor)
+        if (
+            payload.run_minutes != app_state.exhaust_run_minutes
+            or payload.interval_minutes != app_state.exhaust_interval_minutes
+        ):
+            app_state.activity_log.record(
+                f"exhaust schedule set: run {payload.run_minutes}m every {payload.interval_minutes}m", actor
+            )
         app_state.exhaust_schedule_enabled = payload.enabled
         app_state.exhaust_run_minutes = payload.run_minutes
         app_state.exhaust_interval_minutes = payload.interval_minutes
@@ -474,21 +589,36 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn):
 
 
 @app.post("/api/exhaust/manual", response_model=ExhaustStatus)
-def set_exhaust_manual(payload: ExhaustManualIn):
+def set_exhaust_manual(payload: ExhaustManualIn, request: Request):
     with app_state.lock:
         if app_state.exhaust_schedule_enabled:
             raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
+        app_state.relay_activity.note("exhaust", payload.state, request.state.user.username)
         app_state.exhaust_commanded = payload.state
         return _exhaust_status(datetime.utcnow())
 
 
 @app.post("/api/export")
-def trigger_export(session: Session = Depends(get_session)):
+def trigger_export(request: Request, session: Session = Depends(get_session)):
     export_readings_to_excel(session)
+    app_state.activity_log.record("data exported", request.state.user.username)
     return FileResponse(
         EXPORT_PATH,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename="readings_export.xlsx",
+    )
+
+
+@app.post("/api/activity/export")
+def trigger_activity_export(request: Request, session: Session = Depends(get_session)):
+    """Exports the complete activity_log table - every entry ever recorded,
+    not just the last 20 the dashboard feed shows."""
+    export_activity_log_to_excel(session)
+    app_state.activity_log.record("activity log exported", request.state.user.username)
+    return FileResponse(
+        ACTIVITY_EXPORT_PATH,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="activity_log_export.xlsx",
     )
 
 

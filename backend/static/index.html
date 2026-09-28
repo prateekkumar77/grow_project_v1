@@ -528,6 +528,17 @@
   .control-btn.export:hover { border-color: var(--moss); color: #eaf1de; }
   .control-btn.export:disabled { cursor: wait; opacity: 0.6; transform: none; }
 
+  /* viewer role: read-only, every control is visually and functionally
+     inert - except #step-toggle (1h/30m chart step), which is a pure
+     display preference over data a viewer can already GET, not a tent
+     control, so it stays interactive for every role. */
+  body.viewer-role .relay button,
+  body.viewer-role .control-btn,
+  body.viewer-role .segmented:not(#step-toggle) button {
+    cursor: not-allowed !important;
+    pointer-events: none;
+  }
+
   .control-pending {
     display: none;
     align-items: center;
@@ -621,6 +632,46 @@
     overflow-x: auto;
   }
 
+  .activity-list {
+    max-height: 280px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .activity-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .activity-row:last-child { border-bottom: none; }
+
+  .activity-time {
+    font-family: var(--font-mono);
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+
+  .activity-message { color: var(--text-dim); }
+
+  .activity-actor {
+    font-family: var(--font-mono);
+    color: var(--text-faint);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  .activity-empty {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 12px;
+  }
+
   .chart-container svg { display: block; width: 100%; height: auto; }
 
   .chart-empty {
@@ -704,6 +755,7 @@
 
   <header>
     <h1>Grow tent control<span class="sub" id="profile-label"></span></h1>
+    <span id="role-badge" class="status-badge" data-state="unknown" style="display: none;"><span class="dot"></span><span class="text"></span></span>
     <span id="conn-badge" class="status-badge" data-state="unreachable"><span class="dot"></span><span class="text">connecting&hellip;</span></span>
   </header>
 
@@ -774,12 +826,12 @@
         <div class="relay" id="relay-fan" data-relay="fan">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 12c1.5-3 1-6-1.5-7.5C8.5 6 8.7 9.3 12 12Z"/><path d="M12 12c3 1.5 6 1 7.5-1.5-2-2-5.3-1.8-7.5 1.5Z"/><path d="M12 12c-1.5 3-1 6 1.5 7.5C15.5 18 15.3 14.7 12 12Z"/></svg>fan</div>
           <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+          <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
         <div class="relay" id="relay-pump" data-relay="pump">
           <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
           <button>off</button>
-          <div class="pending"><span class="blip"></span>pending&hellip;</div>
+          <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
       </div>
     </div>
@@ -861,6 +913,17 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+      recent activity
+      <span class="meta" style="margin-left: auto; font-weight: 400;">last 20 actions</span>
+    </div>
+    <div id="activity-list" class="activity-list">
+      <div class="activity-empty">no actions yet</div>
+    </div>
+  </div>
+
   </div>
 
   <div id="tab-history" class="tab-panel" style="display:none">
@@ -909,10 +972,17 @@
     </div>
     <div class="control-row">
       <div class="control-status">
-        <button class="control-btn enabled export" id="export-btn">download .xlsx</button>
+        <button class="control-btn enabled export" id="export-btn">download sensor data</button>
         <div class="control-pending" id="export-pending"><span class="blip"></span>exporting&hellip;</div>
       </div>
       <span class="meta" id="export-meta">every logged reading, from the start of this database</span>
+    </div>
+    <div class="control-row" style="margin-top: 10px;">
+      <div class="control-status">
+        <button class="control-btn enabled export" id="activity-export-btn">download activity log</button>
+        <div class="control-pending" id="activity-export-pending"><span class="blip"></span>exporting&hellip;</div>
+      </div>
+      <span class="meta" id="activity-export-meta">complete activity history, not just the last 20 shown live</span>
     </div>
   </div>
 
@@ -928,6 +998,7 @@
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
   var currentExhaustScheduleEnabled = false;
+  var currentUserRole = null;
   var lastValues = { temp: null, humidity: null, soil: null };
 
   function fmt(n) {
@@ -980,10 +1051,22 @@
 
       btn.textContent = reported ? "on" : "off";
       btn.classList.toggle("on", !!reported);
-      btn.disabled = !manual;
+      btn.disabled = !manual || currentUserRole === "viewer";
 
       var pending = status.reported_relay_state != null && commanded !== reported;
       container.classList.toggle("pending", pending);
+
+      // Pump has its own firmware-side safety cap/cooldown, which can
+      // silently refuse a commanded "on" for a while - distinguish that
+      // from the generic, usually-resolves-in-one-cycle "pending" so it
+      // doesn't look like the dashboard is stuck.
+      if (name === "pump") {
+        var pendingText = container.querySelector(".pending-text");
+        var cooldownS = status.pump_cooldown_remaining_s || 0;
+        pendingText.textContent = pending && cooldownS > 0
+          ? "cooldown ≈" + Math.ceil(cooldownS) + "s"
+          : "pending…";
+      }
     });
 
     showBanner("banner-stale", !!status.offline);
@@ -993,7 +1076,41 @@
     applyLightStatus(status.light);
     applyExhaustStatus(status.exhaust);
     applyAcAndHaStatus(status);
+    applyActivity(status.activity);
     renderLightPie(status.light);
+  }
+
+  function applyActivity(activity) {
+    var container = document.getElementById("activity-list");
+    // Rebuilt every poll cycle - preserve scroll position so scrolling down
+    // to read older entries doesn't get yanked back to the top every 5s.
+    var scrollTop = container.scrollTop;
+    container.innerHTML = "";
+    if (!activity || activity.length === 0) {
+      var empty = document.createElement("div");
+      empty.className = "activity-empty";
+      empty.textContent = "no actions yet";
+      container.appendChild(empty);
+      return;
+    }
+    activity.forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "activity-row";
+      var time = document.createElement("span");
+      time.className = "activity-time";
+      time.textContent = new Date(entry.timestamp + "Z").toLocaleString();
+      var msg = document.createElement("span");
+      msg.className = "activity-message";
+      msg.textContent = entry.message;
+      var actor = document.createElement("span");
+      actor.className = "activity-actor";
+      actor.textContent = "<" + entry.actor + ">";
+      row.appendChild(time);
+      row.appendChild(msg);
+      row.appendChild(actor);
+      container.appendChild(row);
+    });
+    container.scrollTop = scrollTop;
   }
 
   function applyAcAndHaStatus(status) {
@@ -1009,8 +1126,8 @@
 
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", manual);
-    btn.disabled = !manual;
+    btn.classList.toggle("enabled", manual && currentUserRole !== "viewer");
+    btn.disabled = !manual || currentUserRole === "viewer";
 
     var pending = status.reported_relay_state != null && commanded !== reported;
     document.getElementById("ac-pending").classList.toggle("show", pending);
@@ -1028,8 +1145,8 @@
     var reported = light.reported != null ? light.reported : light.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", !light.schedule_enabled);
-    btn.disabled = light.schedule_enabled;
+    btn.classList.toggle("enabled", !light.schedule_enabled && currentUserRole !== "viewer");
+    btn.disabled = light.schedule_enabled || currentUserRole === "viewer";
 
     var pending = light.reported != null && light.commanded !== light.reported;
     document.getElementById("light-pending").classList.toggle("show", pending);
@@ -1038,6 +1155,7 @@
     if (document.activeElement !== select) {
       select.value = String(light.on_hours);
     }
+    select.disabled = currentUserRole === "viewer";
     document.getElementById("light-off-hours").textContent = "off for " + light.off_hours + "h";
   }
 
@@ -1053,8 +1171,8 @@
     var reported = exhaust.reported != null ? exhaust.reported : exhaust.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", !exhaust.schedule_enabled);
-    btn.disabled = exhaust.schedule_enabled;
+    btn.classList.toggle("enabled", !exhaust.schedule_enabled && currentUserRole !== "viewer");
+    btn.disabled = exhaust.schedule_enabled || currentUserRole === "viewer";
 
     var pending = exhaust.reported != null && exhaust.commanded !== exhaust.reported;
     document.getElementById("exhaust-pending").classList.toggle("show", pending);
@@ -1063,11 +1181,45 @@
     if (document.activeElement !== runSelect) {
       runSelect.value = String(exhaust.run_minutes);
     }
+    runSelect.disabled = currentUserRole === "viewer";
     var intervalSelect = document.getElementById("exhaust-interval-minutes");
     if (document.activeElement !== intervalSelect) {
       intervalSelect.value = String(exhaust.interval_minutes);
     }
+    intervalSelect.disabled = currentUserRole === "viewer";
     document.getElementById("exhaust-off-label").textContent = "off for " + exhaust.off_minutes + "m";
+  }
+
+  function loadRole() {
+    fetch("/api/me")
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status " + r.status);
+        return r.json();
+      })
+      .then(function (me) {
+        currentUserRole = me.role;
+        document.body.classList.toggle("viewer-role", currentUserRole === "viewer");
+
+        var badge = document.getElementById("role-badge");
+        badge.style.display = "";
+        badge.dataset.state = currentUserRole === "admin" ? "ok" : "stale";
+        badge.querySelector(".text").textContent = me.username + " · " + currentUserRole;
+
+        if (currentUserRole === "viewer") {
+          // One-time lockdown for controls the poll cycle never touches -
+          // everything else is re-guarded on every applyStatus/applyLightStatus/
+          // applyExhaustStatus call so it can't be re-enabled by a later poll.
+          ["btn-auto", "btn-manual", "light-btn-manual", "light-btn-schedule",
+            "exhaust-btn-manual", "exhaust-btn-schedule", "export-btn", "activity-export-btn"].forEach(function (id) {
+            document.getElementById(id).disabled = true;
+          });
+        }
+      })
+      .catch(function () {
+        // Non-critical for rendering, but every /api/* call will 401 right
+        // behind this one if it failed - the browser's own Basic Auth
+        // prompt is the real gate here.
+      });
   }
 
   function loadProfile() {
@@ -1551,6 +1703,39 @@
       });
   });
 
+  document.getElementById("activity-export-btn").addEventListener("click", function () {
+    var btn = document.getElementById("activity-export-btn");
+    var pending = document.getElementById("activity-export-pending");
+    var meta = document.getElementById("activity-export-meta");
+    btn.disabled = true;
+    pending.style.display = "flex";
+
+    fetch("/api/activity/export", { method: "POST" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("export failed (" + res.status + ")");
+        return res.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "activity_log_export.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        meta.textContent = "downloaded at " + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        meta.textContent = err.message || "export failed";
+      })
+      .finally(function () {
+        btn.disabled = false;
+        pending.style.display = "none";
+      });
+  });
+
+  loadRole();
   loadProfile();
   poll();
   setInterval(poll, POLL_MS);

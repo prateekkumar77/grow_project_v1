@@ -134,6 +134,33 @@ rejected with `409` while the schedule is enabled, and `run_minutes`
 can't exceed `interval_minutes` (rejected with `422`) since running
 longer than the cycle itself doesn't mean anything.
 
+## Activity log
+
+The dashboard has a scrollable "recent activity" panel showing the last 20
+notable actions, newest first, each with a timestamp and who did it:
+mode switches (`auto mode on`/`manual mode on`), relay on/off transitions
+for every relay (`fan on`, `pump off`, `light on`, `exhaust off`, `ac on`
+- whether triggered by a manual dashboard click or the decision
+engine/schedule), light/exhaust schedule toggles and reconfiguration
+(`light schedule on`, `light schedule set: 18h on/day`, `exhaust schedule
+set: run 1m every 5m`), and data exports. Every entry shows its actor -
+the dashboard username for a manual action, or `<auto>` for anything the
+decision engine or a schedule did on its own - rendered like `<admin>` or
+`<auto>` next to the message.
+
+Only actual transitions are logged - a relay holding steady across
+telemetry cycles never adds an entry, so the feed doesn't fill up with
+repeats of the same state.
+
+The live feed itself is in-memory only (an `ActivityLog` ring buffer
+capped at the last 20 entries, see `backend/activity_log.py`) and resets
+on backend restart, like the rest of `AppState` - but every entry is also
+durably written to the `activity_log` DB table (unbounded, never capped
+or reset) the moment it's recorded. **"download activity log"**, next to
+the "download sensor data" button on the history tab, exports that
+complete table - not just the last 20 the live feed shows - the same way
+"download sensor data" exports the full `readings` table.
+
 ## History charts
 
 The dashboard has a second tab, **history**, alongside the live view:
@@ -214,7 +241,7 @@ pio run --target upload
 | Method & path | Caller | Purpose |
 |---|---|---|
 | `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
-| `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading |
+| `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading, last 20 activity-log entries |
 | `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
@@ -226,6 +253,49 @@ pio run --target upload
 | `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
 | `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |
 | `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
+| `POST /api/activity/export` | Dashboard/manual | export the complete `activity_log` table (not just the last 20) and return the `.xlsx` file itself |
+| `GET /api/me` | Dashboard | who's currently authenticated (`username`, `role`) |
+
+## Dashboard access / roles
+
+The dashboard is protected with HTTP Basic Auth - no new dependency, no
+sessions, just `base64`/`secrets` from the standard library, matching the
+single-file/no-build-step/no-CDN dashboard's own minimal-dependency stance.
+Users are declared in the backend's `.env` as a JSON array:
+
+```
+DASHBOARD_USERS=[{"username":"admin","password":"changeme-admin","role":"admin"},{"username":"viewer","password":"changeme-viewer","role":"viewer"}]
+```
+
+Two roles, nothing configurable beyond them:
+
+- **admin** - full control, identical to the pre-auth dashboard.
+- **viewer** - can see everything (`GET` routes: status, history, charts,
+  profile) but every mutating call (`POST /api/mode`, `/api/relay`,
+  `/api/light/*`, `/api/exhaust/*`, `/api/export`) is rejected with `403`.
+  The dashboard UI also disables every button/dropdown for a viewer so
+  there's nothing clickable to try in the first place - but the `403` is
+  enforced server-side regardless of what the browser does.
+
+`POST /api/telemetry` is the one route with no auth at all - the ESP32
+firmware sends no `Authorization` header, so protecting it would just
+break every telemetry post. Everything else, including the dashboard's own
+static files, requires valid credentials.
+
+Passwords are plaintext in `.env`, same trust model as `HA_TOKEN` and every
+other credential already in that file - keep `.env` out of version control.
+If `DASHBOARD_USERS` is missing, empty, or malformed, the dashboard fails
+closed and rejects every request rather than falling back to a shipped
+default login.
+
+**No session timeout.** Basic Auth is stateless - the backend checks
+credentials on every request and never issues or tracks a session, so
+there's nothing here that expires like `AUTO_REVERT_MINUTES` does for
+manual mode. Staying "logged in" is purely the browser caching your
+credentials for this origin and resending them automatically; how long
+that lasts (until the browser/tab closes, site data is cleared, etc.) is
+up to the browser, not this app. There's also no working "log out" button
+possible under Basic Auth - only the browser can drop cached credentials.
 
 ## Home Assistant / Google Home
 

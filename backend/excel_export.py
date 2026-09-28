@@ -7,11 +7,12 @@ import os
 from openpyxl import Workbook
 from sqlmodel import Session, select
 
-from models import ReadingRow
+from models import ActivityLogRow, ReadingRow
 
 logger = logging.getLogger("excel_export")
 
 EXPORT_PATH = os.getenv("EXPORT_PATH", "data/readings_export.xlsx")
+ACTIVITY_EXPORT_PATH = os.getenv("ACTIVITY_EXPORT_PATH", "data/activity_log_export.xlsx")
 
 _HEADERS = [
     "timestamp",
@@ -23,6 +24,8 @@ _HEADERS = [
     "commanded_relay_state",
     "mode",
 ]
+
+_ACTIVITY_HEADERS = ["timestamp", "message", "actor"]
 
 
 def export_readings_to_excel(session: Session, path: str = EXPORT_PATH) -> int:
@@ -51,4 +54,24 @@ def export_readings_to_excel(session: Session, path: str = EXPORT_PATH) -> int:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     wb.save(path)
     logger.info("Exported %d readings to %s", len(rows), path)
+    return len(rows)
+
+
+def export_activity_log_to_excel(session: Session, path: str = ACTIVITY_EXPORT_PATH) -> int:
+    """Writes every row in the activity_log table to `path` - the complete,
+    unbounded history, not just the last 20 the dashboard feed shows.
+    Returns row count."""
+    rows = session.exec(select(ActivityLogRow).order_by(ActivityLogRow.timestamp)).all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "activity_log"
+    ws.append(_ACTIVITY_HEADERS)
+
+    for row in rows:
+        ws.append([row.timestamp.isoformat(), row.message, row.actor])
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    wb.save(path)
+    logger.info("Exported %d activity log entries to %s", len(rows), path)
     return len(rows)

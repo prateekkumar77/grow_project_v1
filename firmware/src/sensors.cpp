@@ -27,6 +27,7 @@ Reading sensors_read() {
   r.dht_valid = !(isnan(r.humidity) || isnan(r.temp_c));
 
   int raw = analogRead(SOIL_MOISTURE_PIN);
+  r.soil_raw = raw;
   r.soil_moisture = soil_raw_to_percent(raw);
 
   return r;

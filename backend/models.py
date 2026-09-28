@@ -42,6 +42,10 @@ class TelemetryIn(BaseModel):
     humidity: float
     soil_moisture: float
     relay_state: RelayState
+    # Seconds left before the firmware will honor a commanded pump-on
+    # again, or 0 if no cooldown is active. Defaults to 0 so older
+    # firmware that doesn't send this field still validates.
+    pump_cooldown_remaining_s: float = 0.0
 
 
 class TelemetryOut(BaseModel):
@@ -109,6 +113,14 @@ class HaStatus(BaseModel):
     checked_at: Optional[datetime] = None
 
 
+class ActivityEntryOut(BaseModel):
+    timestamp: datetime
+    message: str
+    # Username of whoever triggered a manual dashboard action, or "auto"
+    # for anything the decision engine or a schedule did on its own.
+    actor: str
+
+
 class StatusOut(BaseModel):
     mode: Literal["auto", "manual"]
     commanded_relay_state: RelayState
@@ -119,6 +131,14 @@ class StatusOut(BaseModel):
     light: LightStatus
     exhaust: ExhaustStatus
     ha: HaStatus
+    # Newest first, capped at activity_log.MAX_ENTRIES - piggybacks on the
+    # same 5s status poll rather than its own endpoint, same as everything
+    # else the dashboard shows.
+    activity: list[ActivityEntryOut]
+    # 0 unless the firmware is currently refusing a commanded pump-on due to
+    # its own post-cap cooldown - lets the dashboard show "cooldown" instead
+    # of a generic, indefinitely-stuck-looking "pending" for the pump.
+    pump_cooldown_remaining_s: float = 0.0
 
 
 # --- persistence --------------------------------------------------------------------
@@ -143,3 +163,17 @@ class ReadingRow(SQLModel, table=True):
     reported_relay_state: str  # JSON: {"fan": bool, "exhaust": bool, "ac": bool, "pump": bool, "light": bool}
     commanded_relay_state: str  # JSON: same shape
     mode: str
+
+
+class ActivityLogRow(SQLModel, table=True):
+    """Durable, unbounded history of every activity-log entry - the
+    in-memory ActivityLog (activity_log.py) only ever keeps the most
+    recent 20 for the dashboard feed; this table is the complete record
+    behind the "export activity log" button."""
+
+    __tablename__ = "activity_log"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    message: str
+    actor: str
