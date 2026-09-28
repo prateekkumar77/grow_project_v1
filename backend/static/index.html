@@ -528,10 +528,13 @@
   .control-btn.export:hover { border-color: var(--moss); color: #eaf1de; }
   .control-btn.export:disabled { cursor: wait; opacity: 0.6; transform: none; }
 
-  /* viewer role: read-only, every control is visually and functionally inert */
+  /* viewer role: read-only, every control is visually and functionally
+     inert - except #step-toggle (1h/30m chart step), which is a pure
+     display preference over data a viewer can already GET, not a tent
+     control, so it stays interactive for every role. */
   body.viewer-role .relay button,
   body.viewer-role .control-btn,
-  body.viewer-role .segmented button {
+  body.viewer-role .segmented:not(#step-toggle) button {
     cursor: not-allowed !important;
     pointer-events: none;
   }
