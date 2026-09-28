@@ -46,6 +46,12 @@ static void runTelemetryCycle() {
     lastTempC = reading.temp_c;
   }
 
+  // Raw ADC value behind soil_moisture, for calibrating SOIL_ADC_DRY/WET in
+  // config.h - dip the probe in water and note this number, do the same in
+  // dry air, then set the two constants to what's actually measured rather
+  // than the placeholder guesses.
+  Serial.printf("soil raw=%d -> %.0f%%\n", reading.soil_raw, reading.soil_moisture);
+
   RelayState actual = relays.getState();
   String mode;
   RelayState commanded;
