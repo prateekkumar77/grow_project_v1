@@ -286,6 +286,21 @@ def post_telemetry(
 
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
+            # Manual mode's pump command is a single static value with no
+            # concept of automatic re-arming - unlike auto mode's decision
+            # engine, which actively re-evaluates it from soil moisture
+            # every cycle, nothing here ever revisits it. If the firmware's
+            # own 30s/60s safety cap just cut the pump, cancel the standing
+            # "on" command rather than silently leaving it in place -
+            # otherwise the firmware would honor that same stale command
+            # the moment the cooldown clears, and the pump would restart on
+            # its own, repeating indefinitely until someone notices and
+            # turns it off. Requiring a fresh POST /api/relay to run it
+            # again matches what "manual" means: nothing runs unless a
+            # person asks for it right now. Auto mode is never touched by
+            # this - its own re-evaluation below is unaffected.
+            if payload.pump_cooldown_remaining_s > 0 and commanded.pump:
+                commanded.pump = False
         else:
             de_reading = DecisionReading(
                 temp_c=reading.temp_c,
