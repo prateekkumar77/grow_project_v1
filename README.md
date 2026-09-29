@@ -3,7 +3,10 @@
 Automated environmental control for a home grow tent: an ESP32 reports
 sensor readings, a FastAPI backend decides what the relays should do, and
 a browser dashboard shows/controls it, with optional Home Assistant /
-Google Home integration for the AC.
+Google Home integration for the AC. The dashboard is a single
+dependency-free HTML file - no build step, no CDN, no external fonts -
+responsive down to a small phone, with a sticky status header and
+touch-sized controls throughout.
 
 The system is plant-agnostic: nothing in the hardware or control logic
 assumes a species, strain, or growth stage. What changes between grows is

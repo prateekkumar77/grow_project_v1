@@ -155,6 +155,35 @@ was tried before landing here.
   badge, since it depends on Home Assistant rather than a local relay —
   its "on" accent is teal to stay visually distinct from every other
   relay's green/amber.
+- **Sticky header, not a fixed one.** `position: sticky` keeps mode/
+  connection status visible while scrolling a long panel list on a phone,
+  without the extra complexity a `fixed` header brings (content needing a
+  matching top-padding offset, z-index fights). The one wrinkle: the
+  manual-mode strip is a separate `position: fixed` full-width banner
+  above everything, so the sticky header's `top` offset has to shift to
+  `50px` under `body.manual` or the two would overlap - handled with the
+  same class the rest of manual mode's visual treatment already toggles.
+- **Icon "chips" are pure CSS, no wrapper markup.** An SVG root is
+  box-generating like an `<img>`, so `.section-title svg` and `.readout
+  .icon` get their padded/rounded background directly - no `<span>`
+  wrapper needed around every one of the ~13 icons in the page to get a
+  colored badge look.
+- **Chart data points get a tap tooltip, not just hover `<title>`.**
+  `<title>` never fires on a touchscreen, so a chart's exact values were
+  effectively undiscoverable on mobile. Each point already carries a
+  `<title>` for desktop mouse users; a second, larger (r=11 vs. the
+  visible r=2.5 dot) invisible hit circle sits on top, wired to a small
+  fixed-position tooltip shown on `pointerdown` and dismissed by tapping
+  anywhere else - large enough to reliably hit with a finger without
+  visually enlarging the dot itself.
+- **A `--tap: 44px` token, applied as `min-height` across every button,
+  select, and toggle** - the standard minimum comfortable touch target
+  (Apple/Google guidance), rather than sizing controls for a mouse cursor
+  and hoping they're still tappable on a phone.
+- **`prefers-reduced-motion` is respected globally** - none of the
+  pulse/slide/fade animations carry information, so anyone with that OS
+  setting gets them collapsed to instant, no separate opt-out needed per
+  component.
 
 ## Docker / infra
 
