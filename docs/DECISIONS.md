@@ -99,10 +99,13 @@ was tried before landing here.
   orderings the UI implies (humidity low < high, temp low < fan &le; ac,
   alert &ge; temp-ac) so a nonsensical profile is rejected with `422`
   rather than silently producing an always-on or always-off relay.
-- One consolidated `"grow profile updated"` activity-log entry per save,
-  not one per changed field like light/exhaust schedule changes - up to
-  10 fields can change in a single save, which would otherwise flood the
-  20-entry live feed.
+- One consolidated `"grow profile updated: field old->new, ..."`
+  activity-log entry per save, not one per changed field like light/
+  exhaust schedule changes - up to 10 fields can change in a single save,
+  which would otherwise flood the 20-entry live feed. Listing every
+  changed field's old->new value in that one entry keeps it inspectable
+  without diffing two `GET /api/profile` responses by hand. Nothing is
+  logged for a save that doesn't actually change any value.
 
 ## Light schedule
 

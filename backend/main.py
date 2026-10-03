@@ -447,6 +447,26 @@ def get_me(request: Request):
     return {"username": user.username, "role": user.role}
 
 
+def _fmt_profile_value(value) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else f"{value:g}"
+    return str(value)
+
+
+def _describe_profile_changes(old: GrowProfileOut, new: GrowProfileOut) -> str:
+    """One activity-log line listing every field that actually changed,
+    old->new, so a save's effect is visible without diffing two /api/profile
+    responses by hand. Field order follows GrowProfileOut's declaration."""
+    changes = [
+        f"{field} {_fmt_profile_value(getattr(old, field))}->{_fmt_profile_value(getattr(new, field))}"
+        for field in GrowProfileOut.model_fields
+        if getattr(old, field) != getattr(new, field)
+    ]
+    return "grow profile updated: " + ", ".join(changes)
+
+
 @app.get("/api/profile", response_model=GrowProfileOut)
 def get_profile():
     """The active grow profile: every decide_relay_state() threshold, plus
@@ -463,13 +483,15 @@ def set_profile(payload: GrowProfileIn, request: Request, session: Session = Dep
     mutating route - no extra check needed here. Upserts the single
     settings row so the edit survives a restart (unlike every other piece
     of runtime state, which simply resets to its .env default), and logs
-    one consolidated activity-log entry regardless of how many of the 10
-    fields actually changed, rather than one entry per field - otherwise a
-    single save could flood the 20-entry live feed."""
+    one consolidated activity-log entry - with an old->new value for every
+    field that actually changed - regardless of how many of the 10 fields
+    that is, rather than one entry per field, so a single save can't flood
+    the 20-entry live feed."""
     with app_state.lock:
         new_profile = GrowProfileOut(**payload.model_dump())
         if new_profile != app_state.grow_profile:
-            app_state.activity_log.record("grow profile updated", request.state.user.username)
+            message = _describe_profile_changes(app_state.grow_profile, new_profile)
+            app_state.activity_log.record(message, request.state.user.username)
         app_state.grow_profile = new_profile
 
         row = session.get(GrowProfileRow, 1)
