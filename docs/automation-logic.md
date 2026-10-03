@@ -5,15 +5,13 @@ ESP32 never makes environmental decisions itself — it only reports sensor
 readings and its actual relay states, and applies whatever the backend
 tells it to do.
 
-Everything from here down through "Manual mode" covers **fan, AC, and
-pump** — the three outputs `backend/decision_engine.py` actually decides,
-and only while the system is in **auto** mode. Fan and pump are physical
-ESP32 relays; AC has no relay at all and is driven through Home Assistant
-instead (see "AC: no physical relay" below). **Light and exhaust** are
-covered separately, further below, because neither is part of any of
-that: each has its own schedule and is never touched by
-`decide_relay_state()`, by auto/manual mode, or by any sensor reading at
-all.
+Sections up through "Manual mode" cover **fan, AC, and pump** — the three
+outputs `decide_relay_state()` decides, only in **auto** mode. Fan and
+pump are physical ESP32 relays; AC has none and is driven through Home
+Assistant instead (see below). **Light and exhaust** run on their own
+schedules and are covered separately, further down — neither is ever
+touched by `decide_relay_state()`, auto/manual mode, or any sensor
+reading.
 
 ## What gets measured
 
@@ -115,10 +113,24 @@ latency to a page load the way an inline check would.
 
 When the dashboard puts the system in **manual**, the decision engine is
 not consulted at all. Relay commands come only from the last thing a human
-clicked on the dashboard (`POST /api/relay`). The only thing that can still
-override a manual command is the ESP32's own local safety logic (pump
-cap/cooldown, and the offline emergency-temperature floor) — never another
-piece of backend logic.
+clicked on the dashboard (`POST /api/relay`). The other thing that can
+still override a manual command is the ESP32's own local safety logic
+(pump cap/cooldown, and the offline emergency-temperature floor).
+
+**Pump is the one exception.** Manual mode has no concept of "re-arming" a
+relay — whatever was last clicked just gets resent every cycle, forever,
+until clicked again. That's fine for fan/ac/light/exhaust, but not for the
+pump: the firmware's 30s-run/60s-cooldown safety cap (below) can force it
+off without telling the backend why, so the backend would otherwise keep
+resending the same stale "on" command and the pump would settle into a
+perpetual 30-seconds-on/60-seconds-off loop with no way to stop it short
+of noticing and clicking "off." So in manual mode only, the moment the
+backend learns (via `pump_cooldown_remaining_s`) that a cap cutoff just
+happened, it cancels the standing "on" command — turning the pump back on
+after that always takes a fresh `POST /api/relay`, never an automatic
+resumption. **Auto mode is unaffected**: its decision engine already
+re-evaluates the pump from live soil moisture every cycle, so there's no
+stale command to begin with.
 
 Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
 (default 30) of no dashboard activity, so a manual session can't be

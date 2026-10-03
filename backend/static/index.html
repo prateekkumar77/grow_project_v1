@@ -6,13 +6,13 @@
 <title>Grow tent control</title>
 <style>
   :root {
-    --bg: #120e0a;
-    --panel: rgba(42, 34, 24, 0.55);
-    --panel-solid: #241d15;
-    --panel-raised: rgba(255, 255, 255, 0.04);
+    --bg: #0d0a07;
+    --panel: rgba(38, 30, 21, 0.58);
+    --panel-solid: #201910;
+    --panel-raised: rgba(255, 255, 255, 0.045);
     --border: rgba(196, 154, 108, 0.16);
-    --border-strong: rgba(196, 154, 108, 0.32);
-    --text: #f3ead9;
+    --border-strong: rgba(196, 154, 108, 0.34);
+    --text: #f6efe2;
     --text-dim: #b3a488;
     --text-faint: #7c705a;
 
@@ -32,23 +32,34 @@
     --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
     --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
 
+    /* Spacing/radius/shadow scales - consistent rhythm across every
+       component instead of one-off pixel values. */
+    --sp-3: 12px; --sp-4: 16px; --sp-5: 20px;
+    --radius-sm: 10px;
     --radius: 16px;
+    --shadow-md: 0 20px 40px -24px rgba(0, 0, 0, 0.6);
+    /* Minimum comfortable touch target (Apple/Google guidance is ~44px). */
+    --tap: 44px;
+
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
 
   body {
     margin: 0;
     min-height: 100vh;
+    min-height: 100dvh;
     color: var(--text);
     font-family: var(--font-sans);
-    padding: 28px 18px 60px;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 16px 48px;
     background-color: var(--bg);
     background-image:
-      radial-gradient(680px 420px at 12% -8%, rgba(226, 149, 79, 0.14), transparent 60%),
-      radial-gradient(600px 460px at 108% 12%, rgba(107, 180, 168, 0.10), transparent 60%),
-      radial-gradient(900px 700px at 50% 120%, rgba(147, 172, 92, 0.08), transparent 60%);
+      radial-gradient(680px 420px at 12% -8%, rgba(226, 149, 79, 0.16), transparent 60%),
+      radial-gradient(600px 460px at 108% 12%, rgba(107, 180, 168, 0.11), transparent 60%),
+      radial-gradient(900px 700px at 50% 120%, rgba(147, 172, 92, 0.09), transparent 60%);
     background-attachment: fixed;
     transition: background-color 0.5s var(--ease);
   }
@@ -65,14 +76,27 @@
   }
 
   header {
+    position: sticky;
+    top: 0;
+    z-index: 30;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
-    padding-bottom: 20px;
-    margin-bottom: 22px;
+    align-items: center;
+    gap: var(--sp-3) var(--sp-4);
+    margin: 0 -16px var(--sp-5);
+    padding: var(--sp-4) 16px;
+    background: rgba(13, 10, 7, 0.82);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
     border-bottom: 1px solid var(--border);
+    transition: top 0.2s var(--ease);
   }
+
+  /* The manual-mode strip is a fixed full-width banner above everything
+     else - when it's showing, the sticky header needs to stick just
+     below it instead of at the very top, or the two would overlap. */
+  body.manual header { top: 50px; }
 
   h1 {
     font-size: 21px;
@@ -191,10 +215,10 @@
     -webkit-backdrop-filter: blur(18px) saturate(140%);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 20px;
-    margin-bottom: 18px;
-    box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.6);
-    transition: background 0.4s var(--ease), border-color 0.4s var(--ease);
+    padding: var(--sp-5);
+    margin-bottom: var(--sp-4);
+    box-shadow: var(--shadow-md);
+    transition: background 0.4s var(--ease), border-color 0.4s var(--ease), box-shadow 0.25s var(--ease);
   }
 
   body.manual .panel {
@@ -257,8 +281,16 @@
   .readout[data-metric="soil"] { --accent: var(--moss); --accent-glow: rgba(147, 172, 92, 0.35); }
 
   .readout .icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-sm);
     color: var(--accent);
-    margin-bottom: 8px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+    margin: 0 auto 10px;
   }
 
   .readout .label {
@@ -298,15 +330,26 @@
   .section-title {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     font-size: 12px;
     font-weight: 600;
     color: var(--text-dim);
-    margin: 0 0 14px;
+    margin: 0 0 16px;
     letter-spacing: 0.02em;
   }
 
-  .section-title svg { color: var(--text-faint); }
+  /* An SVG root is box-generating like an <img>, so it can take its own
+     padded/rounded "chip" background directly - no wrapping element
+     needed in the markup for every one of these icons. */
+  .section-title svg {
+    color: var(--text-dim);
+    box-sizing: content-box;
+    padding: 7px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+  }
 
   .two-col {
     display: grid;
@@ -373,6 +416,7 @@
     font-family: var(--font-sans);
     font-size: 13px;
     font-weight: 500;
+    min-height: calc(var(--tap) - 6px);
     padding: 7px 18px;
     background: transparent;
     border: none;
@@ -420,11 +464,12 @@
 
   .relay button {
     width: 100%;
+    min-height: var(--tap);
     padding: 10px 0;
     font-family: var(--font-mono);
     font-size: 13px;
     font-weight: 500;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, 0.18);
     border: 1px solid var(--border);
     color: var(--text-faint);
@@ -491,8 +536,9 @@
     font-family: var(--font-mono);
     font-size: 13px;
     font-weight: 500;
+    min-height: var(--tap);
     padding: 10px 24px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     background: rgba(0, 0, 0, 0.18);
     border: 1px solid var(--border);
     color: var(--text-faint);
@@ -568,11 +614,12 @@
   .schedule-controls select {
     font-family: var(--font-mono);
     font-size: 13px;
+    min-height: var(--tap);
     background: var(--panel-raised);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 8px 10px;
-    border-radius: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
   }
 
@@ -589,6 +636,7 @@
     font-family: var(--font-sans);
     font-size: 14px;
     font-weight: 500;
+    min-height: var(--tap);
     padding: 9px 16px;
     background: transparent;
     border: none;
@@ -617,11 +665,12 @@
   .chart-input {
     font-family: var(--font-mono);
     font-size: 13px;
+    min-height: var(--tap);
     background: var(--panel-raised);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 8px 10px;
-    border-radius: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
     color-scheme: dark;
   }
 
@@ -673,6 +722,29 @@
   }
 
   .chart-container svg { display: block; width: 100%; height: auto; }
+
+  /* Chart data points also have a native <title> for desktop hover, but
+     that's a dead end on a touchscreen - there's no hover. This is the
+     tap-to-reveal equivalent, shown at the tapped point. */
+  .chart-tooltip {
+    position: fixed;
+    transform: translate(-50%, -130%);
+    background: var(--panel-solid);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    pointer-events: none;
+    opacity: 0;
+    white-space: nowrap;
+    z-index: 50;
+    transition: opacity 0.15s var(--ease);
+  }
+
+  .chart-tooltip.show { opacity: 1; }
 
   .chart-empty {
     padding: 40px 0;
@@ -744,6 +816,20 @@
   @media (max-width: 480px) {
     .grid-3 { grid-template-columns: 1fr 1fr; }
     .grid-3 > :last-child { grid-column: 1 / -1; }
+    .panel { padding: var(--sp-4); }
+    h1 { font-size: 18px; }
+    .section-title svg { padding: 6px; }
+    .readout .value { font-size: clamp(24px, 9vw, 30px); }
+  }
+
+  /* Respect a person's OS-level "reduce motion" setting - none of these
+     animations carry information, they're all polish. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
   }
 </style>
 </head>
@@ -990,6 +1076,8 @@
 
   <footer>polling /api/status every 5s</footer>
 </div>
+
+<div id="chart-tooltip" class="chart-tooltip" aria-hidden="true"></div>
 
 <script>
 (function () {
@@ -1404,6 +1492,24 @@
     return el;
   }
 
+  // Chart dots also carry a native <title> for desktop hover, but that
+  // never fires on a touchscreen - this is the tap-to-reveal equivalent.
+  var chartTooltip = document.getElementById("chart-tooltip");
+  function showChartTooltip(x, y, text) {
+    chartTooltip.textContent = text;
+    chartTooltip.style.left = x + "px";
+    chartTooltip.style.top = y + "px";
+    chartTooltip.classList.add("show");
+  }
+  function hideChartTooltip() {
+    chartTooltip.classList.remove("show");
+  }
+  document.addEventListener("pointerdown", function (e) {
+    if (!(e.target && e.target.closest && e.target.closest(".chart-hit"))) {
+      hideChartTooltip();
+    }
+  });
+
   function renderDualAxisChart(container, points, xLabels) {
     container.innerHTML = "";
     var hasData = points.some(function (p) { return p.temp_c != null; });
@@ -1426,6 +1532,16 @@
     var tPad = (tMax - tMin) * 0.15 || 1;
     var tLo = tMin - tPad, tHi = tMax + tPad;
     var pLo = 0, pHi = 100;
+
+    function average(values) {
+      if (!values.length) return null;
+      return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+    }
+    var humidityVals = points.map(function (p) { return p.humidity; }).filter(function (v) { return v != null; });
+    var soilVals = points.map(function (p) { return p.soil_moisture; }).filter(function (v) { return v != null; });
+    var tempAvg = average(temps);
+    var humidityAvg = average(humidityVals);
+    var soilAvg = average(soilVals);
 
     function xPos(i) {
       return padL + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
@@ -1488,8 +1604,40 @@
         title.textContent = xLabels[i] + ": " + v.toFixed(1);
         dot.appendChild(title);
         svg.appendChild(dot);
+
+        // A visible r=2.5 dot is too small to reliably tap on a phone -
+        // layer a larger, invisible hit target on top for touch, wired to
+        // the tap tooltip (the <title> above only ever helps a mouse).
+        var hit = svgEl("circle", {
+          cx: x.toFixed(1), cy: y.toFixed(1), r: 11, fill: "transparent",
+          "pointer-events": "all", class: "chart-hit", "cursor": "pointer",
+        });
+        hit.addEventListener("pointerdown", function (e) {
+          e.stopPropagation();
+          showChartTooltip(e.clientX, e.clientY, xLabels[i] + ": " + v.toFixed(1));
+        });
+        svg.appendChild(hit);
       });
     }
+
+    function addAverageLine(avg, yFn, color) {
+      if (avg == null) return;
+      var y = yFn(avg);
+      var line = svgEl("line", {
+        x1: padL, x2: width - padR, y1: y.toFixed(1), y2: y.toFixed(1),
+        stroke: color, "stroke-width": 1.5, "stroke-dasharray": "4 3", opacity: 0.55,
+      });
+      var title = svgEl("title", {});
+      title.textContent = "average: " + avg.toFixed(1);
+      line.appendChild(title);
+      svg.appendChild(line);
+    }
+
+    // Drawn before the data series so the dashed reference lines sit
+    // behind the actual line/dots rather than on top of them.
+    addAverageLine(tempAvg, yTemp, COLOR_TEMP);
+    addAverageLine(humidityAvg, yPct, COLOR_HUMIDITY);
+    addAverageLine(soilAvg, yPct, COLOR_SOIL);
 
     addSeries("temp_c", yTemp, COLOR_TEMP);
     addSeries("humidity", yPct, COLOR_HUMIDITY);
@@ -1509,14 +1657,18 @@
 
     var legend = document.createElement("div");
     legend.className = "chart-legend";
-    [["temperature", COLOR_TEMP], ["humidity", COLOR_HUMIDITY], ["soil moisture", COLOR_SOIL]].forEach(function (pair) {
+    [
+      ["temperature", COLOR_TEMP, tempAvg, "°c"],
+      ["humidity", COLOR_HUMIDITY, humidityAvg, "%"],
+      ["soil moisture", COLOR_SOIL, soilAvg, "%"],
+    ].forEach(function (pair) {
       var item = document.createElement("div");
       item.className = "item";
       var swatch = document.createElement("span");
       swatch.className = "swatch";
       swatch.style.background = pair[1];
       var label = document.createElement("span");
-      label.textContent = pair[0];
+      label.textContent = pair[0] + (pair[2] != null ? " (avg " + pair[2].toFixed(1) + pair[3] + ")" : "");
       item.appendChild(swatch);
       item.appendChild(label);
       legend.appendChild(item);
