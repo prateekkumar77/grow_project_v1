@@ -160,6 +160,18 @@ cd backend
 pytest
 ```
 
+### Installing the dashboard as an app
+
+The dashboard ships a web app manifest (`backend/static/manifest.json`) and
+icons, so Chrome/Chromium offers a real **Install** button in the address
+bar — it opens in its own chromeless window from a desktop/taskbar icon,
+same as a native app, with no service worker or offline support involved.
+This works automatically over `https://` or `http://localhost`; on a plain
+LAN address (`http://192.168.x.x:8000`) Chrome won't offer the install
+button since that isn't a secure context, but **⋮ menu → Save and share →
+Create shortcut → Open as window** gives the same chromeless window
+regardless, no manifest required.
+
 ## Flashing the firmware
 
 ```bash
