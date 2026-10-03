@@ -3,10 +3,13 @@
 Automated environmental control for a home grow tent: an ESP32 reports
 sensor readings, a FastAPI backend decides what the relays should do, and
 a browser dashboard shows/controls it, with optional Home Assistant /
-Google Home integration for the AC. The dashboard is a single
-dependency-free HTML file - no build step, no CDN, no external fonts -
+Google Home integration for the AC. The dashboard is a single HTML file
+with no build step - no bundler, no npm install, just edit and reload -
 responsive down to a small phone, with a sticky status header and
-touch-sized controls throughout.
+touch-sized controls throughout. It does load a handful of CDN libraries
+(Chart.js, Lucide icons, Motion, Google Fonts) for real charts/icons/
+animation/type instead of hand-rolled equivalents - see "CDN dependency"
+below for what that trades away.
 
 The system is plant-agnostic: nothing in the hardware or control logic
 assumes a species, strain, or growth stage. What changes between grows is
@@ -120,9 +123,26 @@ the grow profile — see above):
 Charts are aggregated server-side (`GET /api/charts/day`/`week`, backed
 by `backend/chart_data.py`) rather than shipping raw rows to average in
 the browser — a day is 4,000+ rows, a week 30,000+. A bucket with no
-readings renders as a gap, never zero or interpolated. Hand-rolled inline
-SVG, no charting library, no CDN — the dashboard keeps working with no
-internet access.
+readings renders as a gap, never zero or interpolated. Rendered with
+Chart.js (see "CDN dependency" below) - its own tooltip fires on tap as
+well as hover, so exact values are reachable on a phone with no custom
+touch-target code needed.
+
+## CDN dependency
+
+The dashboard loads four libraries from a CDN: **Chart.js** (+ its
+annotation plugin, for the average reference lines) for the history
+charts, **Lucide** for every icon, **Motion** for a handful of UI
+transitions (the offline/stale banners, tab switching, pending
+indicators), and **Google Fonts** (Inter + JetBrains Mono) for type. This
+is a deliberate departure from this project's earlier "zero CDN, works
+with no internet access" stance - accepted so the UI can use a real icon
+set, real charts, and a real animation library instead of hand-rolled
+equivalents. See `docs/DECISIONS.md` for the reasoning and what it costs:
+the dashboard still loads and the live/manual controls still work with no
+internet access, but icons render blank, charts show a "charts
+unavailable" message, fonts fall back to the OS default, and the handful
+of Motion-driven transitions instantly snap instead of animating.
 
 ## Repository layout
 

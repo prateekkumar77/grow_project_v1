@@ -13,6 +13,23 @@
 <meta name="theme-color" content="#0d0a07">
 <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
 <link rel="apple-touch-icon" href="/static/icon-512.png">
+<!-- CDN libraries. A deliberate departure from this dashboard's earlier
+     "no CDN, works with zero internet access" stance (see docs/DECISIONS.md)
+     - accepted so the UI can use a real icon set, real charts, and a real
+     animation library instead of hand-rolled equivalents. If the CDN is
+     unreachable, fonts/icons/charts/animation degrade gracefully (system
+     font stack, no icons, "could not load chart" message, instant state
+     changes) rather than breaking the page. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400..700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<script type="module">
+  import { animate } from "https://cdn.jsdelivr.net/npm/motion/+esm";
+  window.__animate = animate;
+</script>
 <style>
   :root {
     --bg: #0d0a07;
@@ -38,8 +55,8 @@
 
     --manual-accent: #e0a458;
 
-    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
-    --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
+    --font-sans: "Inter", -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
 
     /* Spacing/radius/shadow scales - consistent rhythm across every
        component instead of one-off pixel values. */
@@ -178,21 +195,17 @@
     50% { opacity: 0.35; }
   }
 
+  /* Height/opacity/margin are driven by Motion (animate(el, {height:...}))
+     rather than a CSS transition - Motion can animate to/from a measured
+     "auto" height directly, which plain CSS cannot do, so this no longer
+     needs the old grid-template-rows:0fr/1fr trick that worked around
+     that. overflow:hidden keeps the content clipped while collapsed/
+     animating; height/opacity/margin starting values below match the
+     collapsed state Motion animates away from on first show. */
   .banner {
-    display: grid;
-    grid-template-rows: 0fr;
+    height: 0;
     margin-bottom: 0;
     opacity: 0;
-    transition: grid-template-rows 0.35s var(--ease), opacity 0.3s var(--ease), margin 0.35s var(--ease);
-  }
-
-  .banner.show {
-    grid-template-rows: 1fr;
-    opacity: 1;
-    margin-bottom: 16px;
-  }
-
-  .banner > div {
     overflow: hidden;
   }
 
@@ -709,7 +722,8 @@
 
   .chart-container {
     width: 100%;
-    overflow-x: auto;
+    height: 280px;
+    position: relative;
   }
 
   .activity-list {
@@ -752,33 +766,15 @@
     font-size: 12px;
   }
 
-  .chart-container svg { display: block; width: 100%; height: auto; }
-
   /* Chart data points also have a native <title> for desktop hover, but
      that's a dead end on a touchscreen - there's no hover. This is the
      tap-to-reveal equivalent, shown at the tapped point. */
-  .chart-tooltip {
-    position: fixed;
-    transform: translate(-50%, -130%);
-    background: var(--panel-solid);
-    border: 1px solid var(--border-strong);
-    color: var(--text);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-md);
-    pointer-events: none;
-    opacity: 0;
-    white-space: nowrap;
-    z-index: 50;
-    transition: opacity 0.15s var(--ease);
-  }
-
-  .chart-tooltip.show { opacity: 1; }
-
   .chart-empty {
-    padding: 40px 0;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
     color: var(--text-faint);
     font-size: 13px;
@@ -877,16 +873,16 @@
   </header>
 
   <div id="banner-unreachable" class="banner">
-    <div><div class="inner">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <div class="inner">
+      <i data-lucide="circle-alert" width="16" height="16" stroke-width="1.8"></i>
       <span>backend unreachable &mdash; the dashboard cannot reach the server itself. Retrying every 5s.</span>
-    </div></div>
+    </div>
   </div>
   <div id="banner-stale" class="banner stale">
-    <div><div class="inner">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+    <div class="inner">
+      <i data-lucide="clock" width="16" height="16" stroke-width="1.8"></i>
       <span>sensor offline &mdash; the backend is up, but the ESP32 has not reported in a while. Showing last known readings.</span>
-    </div></div>
+    </div>
   </div>
 
   <div class="tab-bar">
@@ -900,17 +896,17 @@
   <div class="panel">
     <div class="grid-3">
       <div class="readout" data-metric="temp">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2 2 0 0 0-4 0v11.26a4 4 0 1 0 4 0Z"/></svg></div>
+        <div class="icon"><i data-lucide="thermometer" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">temperature</div>
         <div><span class="value" id="val-temp">&ndash;&ndash;</span><span class="unit">&deg;c</span></div>
       </div>
       <div class="readout" data-metric="humidity">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s7 7.2 7 12a7 7 0 1 1-14 0c0-4.8 7-12 7-12Z"/></svg></div>
+        <div class="icon"><i data-lucide="droplet" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">humidity</div>
         <div><span class="value" id="val-humidity">&ndash;&ndash;</span><span class="unit">%</span></div>
       </div>
       <div class="readout" data-metric="soil">
-        <div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V10"/><path d="M12 14c0-4 3-5.5 7-5.5-.3 4-2.7 6-7 5.5Z"/><path d="M12 17c0-3.2-2.4-4.6-5.5-4.8.2 3.4 2.2 5.2 5.5 4.8Z"/></svg></div>
+        <div class="icon"><i data-lucide="sprout" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">soil moisture</div>
         <div><span class="value" id="val-soil">&ndash;&ndash;</span><span class="unit">%</span></div>
       </div>
@@ -920,7 +916,7 @@
   <div class="two-col">
     <div class="panel">
       <div class="section-title">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+        <i data-lucide="toggle-left" width="14" height="14" stroke-width="1.8"></i>
         mode
       </div>
       <div class="row">
@@ -937,17 +933,17 @@
 
     <div class="panel">
       <div class="section-title">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 4v16M4 9h5"/></svg>
+        <i data-lucide="zap" width="14" height="14" stroke-width="1.8"></i>
         relays
       </div>
       <div class="relays">
         <div class="relay" id="relay-fan" data-relay="fan">
-          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 12c1.5-3 1-6-1.5-7.5C8.5 6 8.7 9.3 12 12Z"/><path d="M12 12c3 1.5 6 1 7.5-1.5-2-2-5.3-1.8-7.5 1.5Z"/><path d="M12 12c-1.5 3-1 6 1.5 7.5C15.5 18 15.3 14.7 12 12Z"/></svg>fan</div>
+          <div class="label"><i data-lucide="fan" width="14" height="14" stroke-width="1.6"></i>fan</div>
           <button>off</button>
           <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
         <div class="relay" id="relay-pump" data-relay="pump">
-          <div class="label"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s6 6.4 6 10.5a6 6 0 1 1-12 0c0-4.1 6-10.5 6-10.5Z"/></svg>pump</div>
+          <div class="label"><i data-lucide="droplet" width="14" height="14" stroke-width="1.6"></i>pump</div>
           <button>off</button>
           <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
@@ -957,7 +953,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      <i data-lucide="lightbulb" width="14" height="14" stroke-width="1.8"></i>
       light
       <span class="meta" style="margin-left: auto; font-weight: 400;">not affected by auto mode</span>
     </div>
@@ -986,7 +982,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8l4-4 4 4"/><path d="M12 4v11"/><path d="M4 19h16"/><path d="M4 15h16"/></svg>
+      <i data-lucide="wind" width="14" height="14" stroke-width="1.8"></i>
       exhaust
       <span class="meta" style="margin-left: auto; font-weight: 400;">not driven by any sensor</span>
     </div>
@@ -1017,7 +1013,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10a6 6 0 0 1 12 0v1a4 4 0 0 1-1 7.9M6 10a4 4 0 0 0-1 7.9M6 10v1a4 4 0 0 0 1 7.9m6-16.8V4m0 3v13"/></svg>
+      <i data-lucide="house" width="14" height="14" stroke-width="1.8"></i>
       home assistant
       <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
     </div>
@@ -1033,7 +1029,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+      <i data-lucide="history" width="14" height="14" stroke-width="1.8"></i>
       recent activity
       <span class="meta" style="margin-left: auto; font-weight: 400;">last 20 actions</span>
     </div>
@@ -1048,7 +1044,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 3 4 5-8"/></svg>
+      <i data-lucide="chart-line" width="14" height="14" stroke-width="1.8"></i>
       daily readings
       <span class="meta" style="margin-left: auto; font-weight: 400;">UTC day</span>
     </div>
@@ -1060,32 +1056,35 @@
         <button id="step-btn-30">30m step</button>
       </div>
     </div>
-    <div id="day-chart-container" class="chart-container"></div>
+    <div class="chart-container"><canvas id="day-chart"></canvas></div>
   </div>
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>
+      <i data-lucide="calendar-days" width="14" height="14" stroke-width="1.8"></i>
       weekly averages
       <span class="meta" style="margin-left: auto; font-weight: 400;">UTC week, 6h averages</span>
     </div>
     <div class="chart-controls">
       <input type="week" id="week-picker" class="chart-input" placeholder="YYYY-Www">
     </div>
-    <div id="week-chart-container" class="chart-container"></div>
+    <div class="chart-container"><canvas id="week-chart"></canvas></div>
   </div>
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      <i data-lucide="lightbulb" width="14" height="14" stroke-width="1.8"></i>
       light schedule
     </div>
-    <div id="light-pie-container" class="pie-row"></div>
+    <div id="light-pie-container" class="pie-row">
+      <canvas id="light-pie-chart" width="140" height="140"></canvas>
+      <div class="pie-caption" id="light-pie-caption"></div>
+    </div>
   </div>
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+      <i data-lucide="download" width="14" height="14" stroke-width="1.8"></i>
       export data
     </div>
     <div class="control-row">
@@ -1110,7 +1109,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      <i data-lucide="sliders-horizontal" width="14" height="14" stroke-width="1.8"></i>
       grow profile
       <span class="meta" style="margin-left: auto; font-weight: 400;">cosmetic only &mdash; doesn't feed the decision engine</span>
     </div>
@@ -1128,7 +1127,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s7 7.2 7 12a7 7 0 1 1-14 0c0-4.8 7-12 7-12Z"/></svg>
+      <i data-lucide="droplets" width="14" height="14" stroke-width="1.8"></i>
       humidity thresholds
     </div>
     <div class="profile-grid">
@@ -1145,7 +1144,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2 2 0 0 0-4 0v11.26a4 4 0 1 0 4 0Z"/></svg>
+      <i data-lucide="thermometer" width="14" height="14" stroke-width="1.8"></i>
       temperature thresholds
     </div>
     <div class="profile-grid">
@@ -1166,7 +1165,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V10"/><path d="M12 14c0-4 3-5.5 7-5.5-.3 4-2.7 6-7 5.5Z"/><path d="M12 17c0-3.2-2.4-4.6-5.5-4.8.2 3.4 2.2 5.2 5.5 4.8Z"/></svg>
+      <i data-lucide="sprout" width="14" height="14" stroke-width="1.6"></i>
       soil moisture &amp; safety
     </div>
     <div class="profile-grid">
@@ -1187,7 +1186,7 @@
 
   <div class="panel">
     <div class="section-title">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+      <i data-lucide="save" width="14" height="14" stroke-width="1.8"></i>
       save
     </div>
     <div class="control-row">
@@ -1203,8 +1202,6 @@
 
   <footer>polling /api/status every 5s</footer>
 </div>
-
-<div id="chart-tooltip" class="chart-tooltip" aria-hidden="true"></div>
 
 <script>
 (function () {
@@ -1252,8 +1249,48 @@
     el.querySelector(".text").textContent = text;
   }
 
+  // Motion is loaded async (ESM) and may not be ready on the very first
+  // call - and a person may have "reduce motion" on - so every animated
+  // transition falls back to just jumping straight to the end state.
+  function prefersReducedMotion() {
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function runMotion(el, keyframes, options) {
+    if (window.__animate && !prefersReducedMotion()) {
+      return window.__animate(el, keyframes, options);
+    }
+    Object.keys(keyframes).forEach(function (prop) {
+      var val = keyframes[prop];
+      el.style[prop] = Array.isArray(val) ? val[val.length - 1] : val;
+    });
+  }
+
   function showBanner(id, show) {
-    document.getElementById(id).classList.toggle("show", show);
+    var el = document.getElementById(id);
+    if (el.classList.contains("show") === show) return;
+    el.classList.toggle("show", show);
+    // Motion can animate directly to/from a measured "auto" height, which
+    // plain CSS cannot do without a fixed max-height guess - this replaces
+    // the old grid-template-rows:0fr/1fr CSS trick that worked around that.
+    runMotion(el, {
+      height: show ? "auto" : "0px",
+      opacity: show ? 1 : 0,
+      marginBottom: show ? "16px" : "0px",
+    }, { duration: 0.35, easing: [0.22, 1, 0.36, 1] });
+  }
+
+  function showPending(el, show) {
+    var isShown = el.style.display === "flex";
+    if (isShown === show) return;
+    if (show) el.style.display = "flex";
+    if (window.__animate && !prefersReducedMotion()) {
+      window.__animate(el, { opacity: show ? [0, 1] : [1, 0] }, { duration: 0.2 }).finished.then(function () {
+        if (!show) el.style.display = "none";
+      });
+    } else {
+      el.style.opacity = show ? "1" : "0";
+      el.style.display = show ? "flex" : "none";
+    }
   }
 
   function applyStatus(status) {
@@ -1637,196 +1674,136 @@
   var COLOR_OFF = "#d16a5a";
   var COLOR_GRID = "rgba(196, 154, 108, 0.14)";
   var COLOR_AXIS_TEXT = "#7c705a";
-  var SVG_NS = "http://www.w3.org/2000/svg";
 
-  function svgEl(tag, attrs) {
-    var el = document.createElementNS(SVG_NS, tag);
-    for (var k in attrs) el.setAttribute(k, attrs[k]);
-    return el;
+  // Chart.js is a CDN dependency - if it failed to load (offline, CDN
+  // blocked), degrade to a static message on each chart rather than
+  // letting an uncaught ReferenceError here stop every script below this
+  // point from ever running, which would break the whole live dashboard.
+  var CHARTS_AVAILABLE = !!window.Chart;
+  if (CHARTS_AVAILABLE) {
+    Chart.defaults.color = COLOR_AXIS_TEXT;
+    Chart.defaults.font.family = getComputedStyle(document.documentElement).getPropertyValue("--font-mono") || "monospace";
+    Chart.defaults.font.size = 11;
   }
 
-  // Chart dots also carry a native <title> for desktop hover, but that
-  // never fires on a touchscreen - this is the tap-to-reveal equivalent.
-  var chartTooltip = document.getElementById("chart-tooltip");
-  function showChartTooltip(x, y, text) {
-    chartTooltip.textContent = text;
-    chartTooltip.style.left = x + "px";
-    chartTooltip.style.top = y + "px";
-    chartTooltip.classList.add("show");
+  function average(values) {
+    if (!values.length) return null;
+    return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
   }
-  function hideChartTooltip() {
-    chartTooltip.classList.remove("show");
-  }
-  document.addEventListener("pointerdown", function (e) {
-    if (!(e.target && e.target.closest && e.target.closest(".chart-hit"))) {
-      hideChartTooltip();
-    }
-  });
 
-  function renderDualAxisChart(container, points, xLabels) {
-    container.innerHTML = "";
-    var hasData = points.some(function (p) { return p.temp_c != null; });
-    if (!hasData) {
-      var empty = document.createElement("div");
+  // One dashed reference line per series at its average over the loaded
+  // window - chartjs-plugin-annotation draws these directly on the chart's
+  // own scales, so there's no hand-rolled coordinate math for it anymore.
+  function avgAnnotations(tempAvg, humidityAvg, soilAvg) {
+    var annotations = {};
+    [
+      ["tempAvg", tempAvg, "yTemp", COLOR_TEMP],
+      ["humidityAvg", humidityAvg, "yPct", COLOR_HUMIDITY],
+      ["soilAvg", soilAvg, "yPct", COLOR_SOIL],
+    ].forEach(function (entry) {
+      var id = entry[0], value = entry[1], yScaleID = entry[2], color = entry[3];
+      if (value == null) return;
+      annotations[id] = {
+        type: "line", yMin: value, yMax: value, yScaleID: yScaleID,
+        borderColor: color, borderWidth: 1.5, borderDash: [4, 3],
+      };
+    });
+    return annotations;
+  }
+
+  function showChartMessage(canvas, message) {
+    var existing = CHARTS_AVAILABLE ? Chart.getChart(canvas) : null;
+    if (existing) existing.destroy();
+    canvas.style.display = "none";
+    var container = canvas.parentElement;
+    var empty = container.querySelector(".chart-empty");
+    if (!empty) {
+      empty = document.createElement("div");
       empty.className = "chart-empty";
-      empty.textContent = "no readings in this range";
       container.appendChild(empty);
+    }
+    empty.textContent = message;
+  }
+
+  function clearChartMessage(canvas) {
+    canvas.style.display = "";
+    var empty = canvas.parentElement.querySelector(".chart-empty");
+    if (empty) empty.remove();
+  }
+
+  function renderDualAxisChart(canvasId, points, xLabels) {
+    var canvas = document.getElementById(canvasId);
+    if (!CHARTS_AVAILABLE) {
+      showChartMessage(canvas, "charts unavailable (chart.js failed to load)");
       return;
     }
-
-    var width = 720, height = 280;
-    var padL = 40, padR = 40, padT = 18, padB = 30;
-    var plotW = width - padL - padR;
-    var plotH = height - padT - padB;
+    var hasData = points.some(function (p) { return p.temp_c != null; });
+    if (!hasData) {
+      showChartMessage(canvas, "no readings in this range");
+      return;
+    }
+    clearChartMessage(canvas);
 
     var temps = points.map(function (p) { return p.temp_c; }).filter(function (v) { return v != null; });
-    var tMin = Math.min.apply(null, temps);
-    var tMax = Math.max.apply(null, temps);
-    var tPad = (tMax - tMin) * 0.15 || 1;
-    var tLo = tMin - tPad, tHi = tMax + tPad;
-    var pLo = 0, pHi = 100;
-
-    function average(values) {
-      if (!values.length) return null;
-      return values.reduce(function (a, b) { return a + b; }, 0) / values.length;
-    }
     var humidityVals = points.map(function (p) { return p.humidity; }).filter(function (v) { return v != null; });
     var soilVals = points.map(function (p) { return p.soil_moisture; }).filter(function (v) { return v != null; });
     var tempAvg = average(temps);
     var humidityAvg = average(humidityVals);
     var soilAvg = average(soilVals);
 
-    function xPos(i) {
-      return padL + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
-    }
-    function yTemp(v) { return padT + (1 - (v - tLo) / (tHi - tLo)) * plotH; }
-    function yPct(v) { return padT + (1 - (v - pLo) / (pHi - pLo)) * plotH; }
+    var existing = Chart.getChart(canvas);
+    if (existing) existing.destroy();
 
-    var svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height });
-
-    // A narrow auto-scaled range (e.g. a climate-controlled tent's weekly
-    // averages barely moving) would otherwise round every gridline to the
-    // same integer and look broken ("24, 24, 24, 24"). Fall back to 1
-    // decimal place whenever the axis span is small enough for that to
-    // matter.
-    var tempDecimals = (tHi - tLo) < 5 ? 1 : 0;
-    var pctDecimals = (pHi - pLo) < 5 ? 1 : 0;
-
-    var gridCount = 4;
-    for (var g = 0; g <= gridCount; g++) {
-      var frac = g / gridCount;
-      var y = padT + frac * plotH;
-      svg.appendChild(svgEl("line", { x1: padL, x2: width - padR, y1: y.toFixed(1), y2: y.toFixed(1), stroke: COLOR_GRID, "stroke-width": 1 }));
-
-      var tempVal = tHi - frac * (tHi - tLo);
-      var leftLabel = svgEl("text", { x: padL - 8, y: (y + 3.5).toFixed(1), "text-anchor": "end", "font-size": 10, fill: COLOR_AXIS_TEXT });
-      leftLabel.textContent = tempVal.toFixed(tempDecimals);
-      svg.appendChild(leftLabel);
-
-      var pctVal = pHi - frac * (pHi - pLo);
-      var rightLabel = svgEl("text", { x: width - padR + 8, y: (y + 3.5).toFixed(1), "text-anchor": "start", "font-size": 10, fill: COLOR_AXIS_TEXT });
-      rightLabel.textContent = pctVal.toFixed(pctDecimals);
-      svg.appendChild(rightLabel);
-    }
-
-    var leftUnit = svgEl("text", { x: 2, y: 12, "font-size": 10, fill: COLOR_TEMP });
-    leftUnit.textContent = "°c";
-    svg.appendChild(leftUnit);
-    var rightUnit = svgEl("text", { x: width - 14, y: 12, "font-size": 10, fill: COLOR_AXIS_TEXT });
-    rightUnit.textContent = "%";
-    svg.appendChild(rightUnit);
-
-    function addSeries(key, yFn, color) {
-      var d = "", started = false;
-      points.forEach(function (p, i) {
-        var v = p[key];
-        if (v == null) { started = false; return; }
-        var x = xPos(i), y = yFn(v);
-        d += (started ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1) + " ";
-        started = true;
-      });
-      if (d.trim()) {
-        svg.appendChild(svgEl("path", { d: d.trim(), fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
-      }
-      points.forEach(function (p, i) {
-        var v = p[key];
-        if (v == null) return;
-        var x = xPos(i), y = yFn(v);
-        var dot = svgEl("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 2.5, fill: color });
-        var title = svgEl("title", {});
-        title.textContent = xLabels[i] + ": " + v.toFixed(1);
-        dot.appendChild(title);
-        svg.appendChild(dot);
-
-        // A visible r=2.5 dot is too small to reliably tap on a phone -
-        // layer a larger, invisible hit target on top for touch, wired to
-        // the tap tooltip (the <title> above only ever helps a mouse).
-        var hit = svgEl("circle", {
-          cx: x.toFixed(1), cy: y.toFixed(1), r: 11, fill: "transparent",
-          "pointer-events": "all", class: "chart-hit", "cursor": "pointer",
-        });
-        hit.addEventListener("pointerdown", function (e) {
-          e.stopPropagation();
-          showChartTooltip(e.clientX, e.clientY, xLabels[i] + ": " + v.toFixed(1));
-        });
-        svg.appendChild(hit);
-      });
-    }
-
-    function addAverageLine(avg, yFn, color) {
-      if (avg == null) return;
-      var y = yFn(avg);
-      var line = svgEl("line", {
-        x1: padL, x2: width - padR, y1: y.toFixed(1), y2: y.toFixed(1),
-        stroke: color, "stroke-width": 1.5, "stroke-dasharray": "4 3", opacity: 0.55,
-      });
-      var title = svgEl("title", {});
-      title.textContent = "average: " + avg.toFixed(1);
-      line.appendChild(title);
-      svg.appendChild(line);
-    }
-
-    // Drawn before the data series so the dashed reference lines sit
-    // behind the actual line/dots rather than on top of them.
-    addAverageLine(tempAvg, yTemp, COLOR_TEMP);
-    addAverageLine(humidityAvg, yPct, COLOR_HUMIDITY);
-    addAverageLine(soilAvg, yPct, COLOR_SOIL);
-
-    addSeries("temp_c", yTemp, COLOR_TEMP);
-    addSeries("humidity", yPct, COLOR_HUMIDITY);
-    addSeries("soil_moisture", yPct, COLOR_SOIL);
-
-    var maxLabels = 8;
-    var stride = Math.max(1, Math.ceil(points.length / maxLabels));
-    xLabels.forEach(function (label, i) {
-      if (i % stride !== 0 && i !== xLabels.length - 1) return;
-      var x = xPos(i);
-      var text = svgEl("text", { x: x.toFixed(1), y: height - padB + 16, "text-anchor": "middle", "font-size": 10, fill: COLOR_AXIS_TEXT });
-      text.textContent = label;
-      svg.appendChild(text);
+    new Chart(canvas, {
+      type: "line",
+      data: {
+        labels: xLabels,
+        datasets: [
+          {
+            label: "temperature" + (tempAvg != null ? " (avg " + tempAvg.toFixed(1) + "°c)" : ""),
+            data: points.map(function (p) { return p.temp_c; }),
+            borderColor: COLOR_TEMP, backgroundColor: COLOR_TEMP, yAxisID: "yTemp",
+            spanGaps: false, tension: 0.3, pointRadius: 2.5, pointHoverRadius: 5, borderWidth: 2,
+          },
+          {
+            label: "humidity" + (humidityAvg != null ? " (avg " + humidityAvg.toFixed(1) + "%)" : ""),
+            data: points.map(function (p) { return p.humidity; }),
+            borderColor: COLOR_HUMIDITY, backgroundColor: COLOR_HUMIDITY, yAxisID: "yPct",
+            spanGaps: false, tension: 0.3, pointRadius: 2.5, pointHoverRadius: 5, borderWidth: 2,
+          },
+          {
+            label: "soil moisture" + (soilAvg != null ? " (avg " + soilAvg.toFixed(1) + "%)" : ""),
+            data: points.map(function (p) { return p.soil_moisture; }),
+            borderColor: COLOR_SOIL, backgroundColor: COLOR_SOIL, yAxisID: "yPct",
+            spanGaps: false, tension: 0.3, pointRadius: 2.5, pointHoverRadius: 5, borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        // mode:"nearest"+intersect:false groups the whole x-column into one
+        // tooltip and fires on tap, not just hover - this is what gives
+        // touch users exact values, replacing the old hand-rolled invisible
+        // hit-circle-per-point mechanism entirely.
+        interaction: { mode: "nearest", intersect: false, axis: "x" },
+        scales: {
+          // No maxRotation override - letting Chart.js rotate labels when
+          // they'd otherwise overlap (e.g. the week chart's longer
+          // "Weekday HH:MM" labels on a narrow phone screen) works better
+          // than a fixed label count, which doesn't adapt to the actual
+          // available width.
+          x: { grid: { color: COLOR_GRID }, ticks: { autoSkip: true, maxTicksLimit: 8 } },
+          yTemp: { position: "left", grid: { color: COLOR_GRID }, title: { display: true, text: "°c", color: COLOR_TEMP } },
+          yPct: { position: "right", min: 0, max: 100, grid: { display: false }, title: { display: true, text: "%" } },
+        },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true, padding: 14 } },
+          tooltip: { backgroundColor: "#201910", borderColor: "rgba(196, 154, 108, 0.34)", borderWidth: 1, padding: 8 },
+          annotation: { annotations: avgAnnotations(tempAvg, humidityAvg, soilAvg) },
+        },
+      },
     });
-
-    container.appendChild(svg);
-
-    var legend = document.createElement("div");
-    legend.className = "chart-legend";
-    [
-      ["temperature", COLOR_TEMP, tempAvg, "°c"],
-      ["humidity", COLOR_HUMIDITY, humidityAvg, "%"],
-      ["soil moisture", COLOR_SOIL, soilAvg, "%"],
-    ].forEach(function (pair) {
-      var item = document.createElement("div");
-      item.className = "item";
-      var swatch = document.createElement("span");
-      swatch.className = "swatch";
-      swatch.style.background = pair[1];
-      var label = document.createElement("span");
-      label.textContent = pair[0] + (pair[2] != null ? " (avg " + pair[2].toFixed(1) + pair[3] + ")" : "");
-      item.appendChild(swatch);
-      item.appendChild(label);
-      legend.appendChild(item);
-    });
-    container.appendChild(legend);
   }
 
   function todayUtcDateString() {
@@ -1841,10 +1818,10 @@
       .then(function (data) {
         var points = data.map(function (d) { return { temp_c: d.temp_c, humidity: d.humidity, soil_moisture: d.soil_moisture }; });
         var labels = data.map(function (d) { return d.timestamp.slice(11, 16); });
-        renderDualAxisChart(document.getElementById("day-chart-container"), points, labels);
+        renderDualAxisChart("day-chart", points, labels);
       })
       .catch(function () {
-        document.getElementById("day-chart-container").innerHTML = '<div class="chart-empty">could not load chart data</div>';
+        showChartMessage(document.getElementById("day-chart"), "could not load chart data");
       });
   }
 
@@ -1884,71 +1861,75 @@
           var hhmm = d.timestamp.slice(11, 16);
           return WEEKDAY_NAMES[dt.getUTCDay()] + " " + hhmm;
         });
-        renderDualAxisChart(document.getElementById("week-chart-container"), points, labels);
+        renderDualAxisChart("week-chart", points, labels);
       })
       .catch(function () {
-        document.getElementById("week-chart-container").innerHTML = '<div class="chart-empty">could not load chart data</div>';
+        showChartMessage(document.getElementById("week-chart"), "could not load chart data");
       });
   }
 
-  function polarPoint(cx, cy, r, angleDeg) {
-    var rad = (angleDeg - 90) * Math.PI / 180;
-    return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-  }
-
-  function pieWedgePath(cx, cy, r, startAngle, endAngle) {
-    var p1 = polarPoint(cx, cy, r, startAngle);
-    var p2 = polarPoint(cx, cy, r, endAngle);
-    var largeArc = (endAngle - startAngle) > 180 ? 1 : 0;
-    return "M " + cx + "," + cy + " L " + p1[0].toFixed(2) + "," + p1[1].toFixed(2) +
-      " A " + r + "," + r + " 0 " + largeArc + " 1 " + p2[0].toFixed(2) + "," + p2[1].toFixed(2) + " Z";
-  }
+  var lightPieInstance = null;
 
   function renderLightPie(light) {
-    var container = document.getElementById("light-pie-container");
-    if (!container || !light) return;
-    container.innerHTML = "";
+    var canvas = document.getElementById("light-pie-chart");
+    var caption = document.getElementById("light-pie-caption");
+    if (!canvas || !light || !CHARTS_AVAILABLE) return;
 
-    var size = 140, cx = size / 2, cy = size / 2, r = size / 2 - 4;
-    var svg = svgEl("svg", { viewBox: "0 0 " + size + " " + size, width: size, height: size });
-    var caption = document.createElement("div");
-    caption.className = "pie-caption";
-
+    var data, colors, captionHtml;
     if (light.schedule_enabled) {
-      var onFraction = light.on_hours / 24;
-      if (onFraction >= 1) {
-        svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: COLOR_ON }));
-      } else if (onFraction <= 0) {
-        svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: COLOR_OFF }));
-      } else {
-        var onAngle = onFraction * 360;
-        svg.appendChild(svgEl("path", { d: pieWedgePath(cx, cy, r, 0, onAngle), fill: COLOR_ON }));
-        svg.appendChild(svgEl("path", { d: pieWedgePath(cx, cy, r, onAngle, 360), fill: COLOR_OFF }));
-      }
-      caption.innerHTML =
+      // A 0-length slice (on_hours or off_hours at an edge, 0 or 24) just
+      // renders invisibly, leaving a full circle of the other color - no
+      // need to special-case those edges by hand.
+      data = [light.on_hours, light.off_hours];
+      colors = [COLOR_ON, COLOR_OFF];
+      captionHtml =
         '<div class="row-item"><span class="swatch" style="background:' + COLOR_ON + '"></span>on for ' + light.on_hours + 'h</div>' +
         '<div class="row-item"><span class="swatch" style="background:' + COLOR_OFF + '"></span>off for ' + light.off_hours + 'h</div>';
     } else {
       var manualOn = !!light.commanded;
       var manualColor = manualOn ? COLOR_ON : COLOR_OFF;
-      svg.appendChild(svgEl("circle", { cx: cx, cy: cy, r: r, fill: manualColor }));
-      caption.innerHTML =
+      data = [1];
+      colors = [manualColor];
+      captionHtml =
         '<div class="row-item"><span class="swatch" style="background:' + manualColor + '"></span>manual &middot; light is ' + (manualOn ? "on" : "off") + '</div>';
     }
 
-    container.appendChild(svg);
-    container.appendChild(caption);
+    // Updated in place rather than destroyed/recreated - this runs on
+    // every 5s poll, and Chart.js's own .update() avoids the flicker a
+    // full rebuild would cause.
+    if (lightPieInstance) {
+      lightPieInstance.data.datasets[0].data = data;
+      lightPieInstance.data.datasets[0].backgroundColor = colors;
+      lightPieInstance.update();
+    } else {
+      lightPieInstance = new Chart(canvas, {
+        type: "doughnut",
+        data: { datasets: [{ data: data, backgroundColor: colors, borderWidth: 0 }] },
+        options: { responsive: false, cutout: "55%", plugins: { legend: { display: false } } },
+      });
+    }
+    caption.innerHTML = captionHtml;
   }
 
   var tabButtons = ["live", "history", "profile"].map(function (name) {
     return document.getElementById("tab-btn-" + name);
   });
+  var currentTabPanel = document.getElementById("tab-live");
   tabButtons.forEach(function (btn) {
     btn.addEventListener("click", function () {
-      tabButtons.forEach(function (b) {
-        b.classList.toggle("active", b === btn);
-        document.getElementById("tab-" + b.dataset.tab).style.display = b === btn ? "" : "none";
-      });
+      if (btn.classList.contains("active")) return;
+      tabButtons.forEach(function (b) { b.classList.toggle("active", b === btn); });
+
+      var nextPanel = document.getElementById("tab-" + btn.dataset.tab);
+      var prevPanel = currentTabPanel;
+      nextPanel.style.display = "";
+      runMotion(nextPanel, {
+        opacity: [0, 1],
+        transform: ["translateY(6px)", "translateY(0px)"],
+      }, { duration: 0.25, easing: [0.22, 1, 0.36, 1] });
+      if (prevPanel !== nextPanel) prevPanel.style.display = "none";
+      currentTabPanel = nextPanel;
+
       if (btn.dataset.tab === "history") {
         loadDayChart();
         loadWeekChart();
@@ -1981,7 +1962,7 @@
     var pending = document.getElementById("export-pending");
     var meta = document.getElementById("export-meta");
     btn.disabled = true;
-    pending.style.display = "flex";
+    showPending(pending, true);
 
     fetch("/api/export", { method: "POST" })
       .then(function (res) {
@@ -2004,7 +1985,7 @@
       })
       .finally(function () {
         btn.disabled = false;
-        pending.style.display = "none";
+        showPending(pending, false);
       });
   });
 
@@ -2013,7 +1994,7 @@
     var pending = document.getElementById("activity-export-pending");
     var meta = document.getElementById("activity-export-meta");
     btn.disabled = true;
-    pending.style.display = "flex";
+    showPending(pending, true);
 
     fetch("/api/activity/export", { method: "POST" })
       .then(function (res) {
@@ -2036,7 +2017,7 @@
       })
       .finally(function () {
         btn.disabled = false;
-        pending.style.display = "none";
+        showPending(pending, false);
       });
   });
 
@@ -2052,7 +2033,7 @@
     });
 
     btn.disabled = true;
-    pending.style.display = "flex";
+    showPending(pending, true);
 
     fetch("/api/profile", {
       method: "POST",
@@ -2079,9 +2060,14 @@
       })
       .finally(function () {
         btn.disabled = false;
-        pending.style.display = "none";
+        showPending(pending, false);
       });
   });
+
+  // Lucide is a CDN dependency too - every icon is a static <i data-lucide>
+  // element, so if it failed to load this just leaves them empty rather
+  // than breaking anything else on the page.
+  if (window.lucide) lucide.createIcons();
 
   loadRole();
   loadProfile();
