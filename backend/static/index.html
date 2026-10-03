@@ -625,6 +625,28 @@
 
   .schedule-controls select:focus { outline: 1px solid var(--border-strong); }
 
+  .profile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
+
+  .profile-field { display: flex; flex-direction: column; gap: 6px; }
+
+  .profile-field input {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    min-height: var(--tap);
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    width: 100%;
+  }
+
+  .profile-field input:focus { outline: 1px solid var(--border-strong); }
+
   .tab-bar {
     display: flex;
     gap: 4px;
@@ -861,6 +883,7 @@
   <div class="tab-bar">
     <button class="tab-btn active" id="tab-btn-live" data-tab="live">live</button>
     <button class="tab-btn" id="tab-btn-history" data-tab="history">history</button>
+    <button class="tab-btn" id="tab-btn-profile" data-tab="profile">profile</button>
   </div>
 
   <div id="tab-live" class="tab-panel">
@@ -1074,6 +1097,101 @@
 
   </div>
 
+  <div id="tab-profile" class="tab-panel" style="display:none">
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.5.4.8 1 .8 1.7v.4h5.4v-.4c0-.7.3-1.3.8-1.7A6 6 0 0 0 12 3Z"/></svg>
+      grow profile
+      <span class="meta" style="margin-left: auto; font-weight: 400;">cosmetic only &mdash; doesn't feed the decision engine</span>
+    </div>
+    <div class="profile-grid">
+      <div class="profile-field">
+        <label class="meta" for="profile-name">name</label>
+        <input type="text" id="profile-name" maxlength="100">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-tent-size">tent size (m&sup2;)</label>
+        <input type="text" id="profile-tent-size" maxlength="50" placeholder="e.g. 1.2x1.2">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5s7 7.2 7 12a7 7 0 1 1-14 0c0-4.8 7-12 7-12Z"/></svg>
+      humidity thresholds
+    </div>
+    <div class="profile-grid">
+      <div class="profile-field">
+        <label class="meta" for="profile-humidity-high">AC on at or above (%)</label>
+        <input type="number" id="profile-humidity-high" min="0" max="100" step="1">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-humidity-low">AC off / fan on at or below (%)</label>
+        <input type="number" id="profile-humidity-low" min="0" max="100" step="1">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V3.5a2 2 0 0 0-4 0v11.26a4 4 0 1 0 4 0Z"/></svg>
+      temperature thresholds
+    </div>
+    <div class="profile-grid">
+      <div class="profile-field">
+        <label class="meta" for="profile-temp-fan">fan on at or above (&deg;C)</label>
+        <input type="number" id="profile-temp-fan" min="-10" max="50" step="0.5">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-temp-ac">AC on at or above (&deg;C)</label>
+        <input type="number" id="profile-temp-ac" min="-10" max="50" step="0.5">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-temp-low">AC off / fan on at or below (&deg;C)</label>
+        <input type="number" id="profile-temp-low" min="-10" max="50" step="0.5">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V10"/><path d="M12 14c0-4 3-5.5 7-5.5-.3 4-2.7 6-7 5.5Z"/><path d="M12 17c0-3.2-2.4-4.6-5.5-4.8.2 3.4 2.2 5.2 5.5 4.8Z"/></svg>
+      soil moisture &amp; safety
+    </div>
+    <div class="profile-grid">
+      <div class="profile-field">
+        <label class="meta" for="profile-soil-low">pump on at or below (%)</label>
+        <input type="number" id="profile-soil-low" min="0" max="100" step="1">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-soil-hysteresis">pump off this many points above that (%)</label>
+        <input type="number" id="profile-soil-hysteresis" min="0.1" max="50" step="0.5">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-alert-temp">force fan+AC on at or above (&deg;C)</label>
+        <input type="number" id="profile-alert-temp" min="-10" max="60" step="0.5">
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+      save
+    </div>
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn enabled" id="profile-save-btn">save profile</button>
+        <div class="control-pending" id="profile-pending"><span class="blip"></span>saving&hellip;</div>
+      </div>
+      <span class="meta" id="profile-meta">takes effect on the next telemetry cycle; persists across restarts</span>
+    </div>
+  </div>
+
+  </div>
+
   <footer>polling /api/status every 5s</footer>
 </div>
 
@@ -1088,6 +1206,18 @@
   var currentExhaustScheduleEnabled = false;
   var currentUserRole = null;
   var lastValues = { temp: null, humidity: null, soil: null };
+  var PROFILE_FIELDS = {
+    "profile-name": { api: "grow_profile_name", type: "string" },
+    "profile-tent-size": { api: "tent_size_m2", type: "string" },
+    "profile-humidity-high": { api: "humidity_high_threshold", type: "number" },
+    "profile-humidity-low": { api: "humidity_low_threshold", type: "number" },
+    "profile-temp-fan": { api: "temp_fan_threshold_c", type: "number" },
+    "profile-temp-ac": { api: "temp_ac_threshold_c", type: "number" },
+    "profile-temp-low": { api: "temp_low_threshold_c", type: "number" },
+    "profile-soil-low": { api: "soil_moisture_low_threshold", type: "number" },
+    "profile-soil-hysteresis": { api: "soil_moisture_hysteresis", type: "number" },
+    "profile-alert-temp": { api: "alert_temp_c", type: "number" },
+  };
 
   function fmt(n) {
     return (typeof n === "number") ? n.toFixed(1) : "--";
@@ -1298,7 +1428,8 @@
           // everything else is re-guarded on every applyStatus/applyLightStatus/
           // applyExhaustStatus call so it can't be re-enabled by a later poll.
           ["btn-auto", "btn-manual", "light-btn-manual", "light-btn-schedule",
-            "exhaust-btn-manual", "exhaust-btn-schedule", "export-btn", "activity-export-btn"].forEach(function (id) {
+            "exhaust-btn-manual", "exhaust-btn-schedule", "export-btn", "activity-export-btn",
+            "profile-save-btn"].concat(Object.keys(PROFILE_FIELDS)).forEach(function (id) {
             document.getElementById(id).disabled = true;
           });
         }
@@ -1310,6 +1441,19 @@
       });
   }
 
+  function applyProfileLabel(profile) {
+    var label = profile.grow_profile_name || "Custom grow profile";
+    if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
+    document.getElementById("profile-label").textContent = label;
+  }
+
+  function populateProfileForm(profile) {
+    Object.keys(PROFILE_FIELDS).forEach(function (id) {
+      var value = profile[PROFILE_FIELDS[id].api];
+      document.getElementById(id).value = value === null || value === undefined ? "" : value;
+    });
+  }
+
   function loadProfile() {
     fetch("/api/profile")
       .then(function (r) {
@@ -1317,13 +1461,13 @@
         return r.json();
       })
       .then(function (profile) {
-        var label = profile.profile_name || "Custom grow profile";
-        if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
-        document.getElementById("profile-label").textContent = label;
+        applyProfileLabel(profile);
+        populateProfileForm(profile);
       })
       .catch(function () {
-        // Non-critical - leave the header without a subtitle rather than
-        // blocking the rest of the dashboard on this.
+        // Non-critical - leave the header without a subtitle and the
+        // profile form blank rather than blocking the rest of the
+        // dashboard on this.
       });
   }
 
@@ -1787,20 +1931,20 @@
     container.appendChild(caption);
   }
 
-  document.getElementById("tab-btn-live").addEventListener("click", function () {
-    document.getElementById("tab-btn-live").classList.add("active");
-    document.getElementById("tab-btn-history").classList.remove("active");
-    document.getElementById("tab-live").style.display = "";
-    document.getElementById("tab-history").style.display = "none";
+  var tabButtons = ["live", "history", "profile"].map(function (name) {
+    return document.getElementById("tab-btn-" + name);
   });
-
-  document.getElementById("tab-btn-history").addEventListener("click", function () {
-    document.getElementById("tab-btn-history").classList.add("active");
-    document.getElementById("tab-btn-live").classList.remove("active");
-    document.getElementById("tab-history").style.display = "";
-    document.getElementById("tab-live").style.display = "none";
-    loadDayChart();
-    loadWeekChart();
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      tabButtons.forEach(function (b) {
+        b.classList.toggle("active", b === btn);
+        document.getElementById("tab-" + b.dataset.tab).style.display = b === btn ? "" : "none";
+      });
+      if (btn.dataset.tab === "history") {
+        loadDayChart();
+        loadWeekChart();
+      }
+    });
   });
 
   document.getElementById("day-picker").addEventListener("change", loadDayChart);
@@ -1880,6 +2024,49 @@
       })
       .catch(function (err) {
         meta.textContent = err.message || "export failed";
+      })
+      .finally(function () {
+        btn.disabled = false;
+        pending.style.display = "none";
+      });
+  });
+
+  document.getElementById("profile-save-btn").addEventListener("click", function () {
+    var btn = document.getElementById("profile-save-btn");
+    var pending = document.getElementById("profile-pending");
+    var meta = document.getElementById("profile-meta");
+    var payload = {};
+    Object.keys(PROFILE_FIELDS).forEach(function (id) {
+      var field = PROFILE_FIELDS[id];
+      var raw = document.getElementById(id).value;
+      payload[field.api] = field.type === "number" ? parseFloat(raw) : (raw.trim() === "" ? null : raw.trim());
+    });
+
+    btn.disabled = true;
+    pending.style.display = "flex";
+
+    fetch("/api/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (res) {
+        return res.json().then(function (body) {
+          if (!res.ok) {
+            var detail = body && body.detail;
+            var msg = Array.isArray(detail) ? detail.map(function (e) { return e.msg; }).join("; ") : detail;
+            throw new Error(msg || "save failed (" + res.status + ")");
+          }
+          return body;
+        });
+      })
+      .then(function (profile) {
+        populateProfileForm(profile);
+        applyProfileLabel(profile);
+        meta.textContent = "saved at " + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        meta.textContent = err.message || "save failed";
       })
       .finally(function () {
         btn.disabled = false;

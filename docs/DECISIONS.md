@@ -6,9 +6,12 @@ was tried before landing here.
 
 ## Decision engine
 
-- `decide_relay_state(reading, previous_state)` is pure and stateless:
-  every threshold is an absolute grow-profile constant (`.env`), never a
-  rolling baseline or history lookup. Same reading, same decision, always.
+- `decide_relay_state(reading, previous_state, profile)` is pure and
+  stateless: every threshold comes from the `profile` argument, an
+  absolute grow-profile value (no rolling baseline or history lookup).
+  Same reading, same profile, same decision, always. The profile itself
+  is `main.py`'s problem (see "Grow profile editor" below) - the function
+  never reads `.env` or the database directly.
 - Temperature is a two-step ladder (fan alone, then AC) mirroring
   humidity's high/low split; `TEMP_LOW_THRESHOLD_C` mirrors humidity's
   low-branch reasoning (pull in warmer room air instead of cooling a tent
@@ -65,6 +68,41 @@ was tried before landing here.
   (`HA_HEALTH_CHECK_INTERVAL_SECONDS`), never inline with a request.
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
+
+## Grow profile editor
+
+- Every decision-engine threshold, plus `ALERT_TEMP_C` and the cosmetic
+  `GROW_PROFILE_NAME`/`TENT_SIZE_M2` fields, are one editable "grow
+  profile" (`GrowProfileIn`/`GrowProfileOut` in `models.py`), live-editable
+  from the dashboard's **profile** tab (admin-only, like every other
+  mutating route) - not a code or `.env` change.
+- Firmware-only safety settings (`EMERGENCY_TEMP_C`, `SOIL_ADC_DRY`/`WET`,
+  `MAX_PUMP_RUN_SECONDS`, `PUMP_COOLDOWN_SECONDS`) are deliberately **not**
+  part of this profile - there is no runtime channel for the backend to
+  push config to the ESP32 at all (telemetry responses only ever carry
+  relay commands), so editing them would silently do nothing. Light/
+  exhaust schedule values aren't part of it either - they're already
+  editable via their own dedicated panels, not a decision-engine threshold.
+- Persists to the database (`GrowProfileRow`, a singleton row fixed at
+  `id=1`) rather than living in-memory like every other runtime setting -
+  this one was deliberately asked to survive a restart, unlike mode or the
+  light/exhaust schedules, which reset to their `.env` default on purpose.
+  `.env` is read only as the very first boot's default, before any save
+  has ever happened; once `GrowProfileRow` exists, `.env` is never
+  consulted again for this value.
+- On startup, a missing `GrowProfileRow` leaves `AppState.grow_profile` at
+  its `.env`-derived default *without writing a row* - a DB row should
+  only ever be created by an explicit `POST /api/profile`, mirroring the
+  "no surprise actuation on a fresh deploy" rationale already used for the
+  light/exhaust schedules.
+- `GrowProfileIn`'s `@model_validator` enforces the same threshold
+  orderings the UI implies (humidity low < high, temp low < fan &le; ac,
+  alert &ge; temp-ac) so a nonsensical profile is rejected with `422`
+  rather than silently producing an always-on or always-off relay.
+- One consolidated `"grow profile updated"` activity-log entry per save,
+  not one per changed field like light/exhaust schedule changes - up to
+  10 fields can change in a single save, which would otherwise flood the
+  20-entry live feed.
 
 ## Light schedule
 

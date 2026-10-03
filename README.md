@@ -41,8 +41,7 @@ safety): [`docs/automation-logic.md`](docs/automation-logic.md).
 
 ### Grow profile
 
-Every threshold is a named environment-variable constant
-(`backend/.env.example`), not a hardcoded number:
+Every threshold is a named, editable value, not a hardcoded number:
 
 | Variable | Governs |
 |---|---|
@@ -52,14 +51,14 @@ Every threshold is a named environment-variable constant
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
 
-Retuning for a different plant, growth stage, or tent means editing
-`.env` and restarting the backend — never touching `decision_engine.py`.
-Keep one `.env` per grow stage and swap between them to reuse this same
-system across different grows.
-
-`GROW_PROFILE_NAME` and `TENT_SIZE_M2` are separate, purely cosmetic
-fields for the dashboard header (`GET /api/profile`) — they don't feed
-the decision engine.
+Retune these from the dashboard's **profile** tab at any time — no
+restart needed, and the edit is saved to the database so it survives one.
+`backend/.env.example` (`HUMIDITY_HIGH_THRESHOLD` etc.) only sets the
+*first-run* default, before anyone has ever saved a profile; editing it
+after that has no effect on a running system. `GROW_PROFILE_NAME` and
+`TENT_SIZE_M2` live in the same profile and tab — separate, purely
+cosmetic fields for the dashboard header that don't feed the decision
+engine.
 
 ## Light schedule
 
@@ -105,7 +104,8 @@ sensor data"** on the history tab, exports that complete table.
 
 ## History charts
 
-A second dashboard tab, **history**:
+A second dashboard tab, **history** (a third, **profile**, covers editing
+the grow profile — see above):
 
 - **Daily readings** — temp/humidity/soil moisture for a chosen UTC day,
   30-minute or 1-hour buckets. Temperature on the left axis (°C),
@@ -181,7 +181,8 @@ constants to what you actually measured and reflash.
 |---|---|---|
 | `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
 | `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading, last 20 activity-log entries |
-| `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
+| `GET /api/profile` | Dashboard | the active grow profile (every decision-engine threshold plus the cosmetic name/tent size) |
+| `POST /api/profile` | Dashboard | save an edited grow profile (admin-only) — persists to the database, survives a restart |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
 | `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |

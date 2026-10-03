@@ -16,6 +16,7 @@ import auth
 import ha_client
 from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
 from chart_data import bucket_by_step
+from decision_engine import GrowProfile
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
 from exhaust_schedule import is_exhaust_on
@@ -32,6 +33,9 @@ from models import (
     ExhaustManualIn,
     ExhaustScheduleIn,
     ExhaustStatus,
+    GrowProfileIn,
+    GrowProfileOut,
+    GrowProfileRow,
     HaStatus,
     LightManualIn,
     LightScheduleIn,
@@ -81,6 +85,27 @@ connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 
+def _default_grow_profile() -> GrowProfileOut:
+    """The grow profile before any dashboard save has ever happened - the
+    same .env values decide_relay_state() used to read as module-level
+    constants. Once a user saves via POST /api/profile, the DB-backed
+    value in AppState.grow_profile takes over permanently and this is
+    never consulted again until a fresh, profile-less database."""
+    thresholds = GrowProfile.from_env()
+    return GrowProfileOut(
+        humidity_high_threshold=thresholds.humidity_high_threshold,
+        humidity_low_threshold=thresholds.humidity_low_threshold,
+        temp_fan_threshold_c=thresholds.temp_fan_threshold_c,
+        temp_ac_threshold_c=thresholds.temp_ac_threshold_c,
+        temp_low_threshold_c=thresholds.temp_low_threshold_c,
+        soil_moisture_low_threshold=thresholds.soil_moisture_low_threshold,
+        soil_moisture_hysteresis=thresholds.soil_moisture_hysteresis,
+        alert_temp_c=ALERT_TEMP_C,
+        grow_profile_name=GROW_PROFILE_NAME,
+        tent_size_m2=TENT_SIZE_M2 or None,
+    )
+
+
 class AppState:
     """In-memory, single-process runtime state. Guarded by `lock` since
     APScheduler jobs and request handlers run on different threads."""
@@ -88,6 +113,10 @@ class AppState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.mode: str = "auto"
+        # Overridden from the DB on startup if a dashboard save has ever
+        # happened (see on_startup) - otherwise this .env-derived default
+        # stands until the first POST /api/profile.
+        self.grow_profile: GrowProfileOut = _default_grow_profile()
         self.commanded_relay_state = RelayState()
         self.reported_relay_state: Optional[RelayState] = None
         self.last_seen: Optional[datetime] = None
@@ -205,6 +234,14 @@ def get_session():
 def on_startup():
     os.makedirs(os.path.dirname(DATABASE_URL.replace("sqlite:///", "")) or ".", exist_ok=True)
     SQLModel.metadata.create_all(engine)
+    # No row yet means no dashboard save has ever happened - leave
+    # app_state.grow_profile at its .env-derived default rather than
+    # writing one now; a DB row should only ever appear from an explicit
+    # POST /api/profile.
+    with Session(engine) as session:
+        row = session.get(GrowProfileRow, 1)
+        if row is not None:
+            app_state.grow_profile = GrowProfileOut(**row.model_dump(exclude={"id"}))
     app.state.scheduler = start_scheduler(app_state, engine)
 
 
@@ -307,7 +344,9 @@ def post_telemetry(
                 humidity=reading.humidity,
                 soil_moisture=reading.soil_moisture,
             )
-            commanded = decide_relay_state(de_reading, app_state.commanded_relay_state)
+            commanded = decide_relay_state(
+                de_reading, app_state.commanded_relay_state, app_state.grow_profile
+            )
 
         # Light and exhaust are never touched by decide_relay_state() or
         # the auto/manual mode above - each is driven entirely by its own
@@ -325,7 +364,7 @@ def post_telemetry(
         # cooling response. Not one-way: once the reading drops back below
         # the threshold, normal mode/decision-engine logic resumes control
         # on the next cycle.
-        if reading.temp_c >= ALERT_TEMP_C:
+        if reading.temp_c >= app_state.grow_profile.alert_temp_c:
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
 
         app_state.commanded_relay_state = commanded
@@ -408,13 +447,41 @@ def get_me(request: Request):
     return {"username": user.username, "role": user.role}
 
 
-@app.get("/api/profile")
+@app.get("/api/profile", response_model=GrowProfileOut)
 def get_profile():
-    """Purely descriptive metadata for the dashboard header - what's
-    actually in the tent right now. Sourced from env vars, not the
-    decision engine's thresholds, so it's safe to change per grow without
-    touching any control logic."""
-    return {"profile_name": GROW_PROFILE_NAME, "tent_size_m2": TENT_SIZE_M2 or None}
+    """The active grow profile: every decide_relay_state() threshold, plus
+    the purely cosmetic name/tent-size fields. .env values are only the
+    first-run default - once anyone saves via POST below, the DB-backed
+    value here takes over permanently, surviving a backend restart."""
+    with app_state.lock:
+        return app_state.grow_profile
+
+
+@app.post("/api/profile", response_model=GrowProfileOut)
+def set_profile(payload: GrowProfileIn, request: Request, session: Session = Depends(get_session)):
+    """Admin-only, enforced by the same auth middleware as every other
+    mutating route - no extra check needed here. Upserts the single
+    settings row so the edit survives a restart (unlike every other piece
+    of runtime state, which simply resets to its .env default), and logs
+    one consolidated activity-log entry regardless of how many of the 10
+    fields actually changed, rather than one entry per field - otherwise a
+    single save could flood the 20-entry live feed."""
+    with app_state.lock:
+        new_profile = GrowProfileOut(**payload.model_dump())
+        if new_profile != app_state.grow_profile:
+            app_state.activity_log.record("grow profile updated", request.state.user.username)
+        app_state.grow_profile = new_profile
+
+        row = session.get(GrowProfileRow, 1)
+        if row is None:
+            row = GrowProfileRow(id=1, **payload.model_dump())
+        else:
+            for field, value in payload.model_dump().items():
+                setattr(row, field, value)
+        session.add(row)
+        session.commit()
+
+        return app_state.grow_profile
 
 
 @app.get("/api/history")
