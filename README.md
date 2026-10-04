@@ -3,10 +3,13 @@
 Automated environmental control for a home grow tent: an ESP32 reports
 sensor readings, a FastAPI backend decides what the relays should do, and
 a browser dashboard shows/controls it, with optional Home Assistant /
-Google Home integration for the AC. The dashboard is a single
-dependency-free HTML file - no build step, no CDN, no external fonts -
+Google Home integration for the AC. The dashboard is a single HTML file
+with no build step - no bundler, no npm install, just edit and reload -
 responsive down to a small phone, with a sticky status header and
-touch-sized controls throughout.
+touch-sized controls throughout. It does load a handful of CDN libraries
+(Chart.js, Lucide icons, Motion, Google Fonts) for real charts/icons/
+animation/type instead of hand-rolled equivalents - see "CDN dependency"
+below for what that trades away.
 
 The system is plant-agnostic: nothing in the hardware or control logic
 assumes a species, strain, or growth stage. What changes between grows is
@@ -41,8 +44,7 @@ safety): [`docs/automation-logic.md`](docs/automation-logic.md).
 
 ### Grow profile
 
-Every threshold is a named environment-variable constant
-(`backend/.env.example`), not a hardcoded number:
+Every threshold is a named, editable value, not a hardcoded number:
 
 | Variable | Governs |
 |---|---|
@@ -52,14 +54,14 @@ Every threshold is a named environment-variable constant
 | `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
 
-Retuning for a different plant, growth stage, or tent means editing
-`.env` and restarting the backend — never touching `decision_engine.py`.
-Keep one `.env` per grow stage and swap between them to reuse this same
-system across different grows.
-
-`GROW_PROFILE_NAME` and `TENT_SIZE_M2` are separate, purely cosmetic
-fields for the dashboard header (`GET /api/profile`) — they don't feed
-the decision engine.
+Retune these from the dashboard's **profile** tab at any time — no
+restart needed, and the edit is saved to the database so it survives one.
+`backend/.env.example` (`HUMIDITY_HIGH_THRESHOLD` etc.) only sets the
+*first-run* default, before anyone has ever saved a profile; editing it
+after that has no effect on a running system. `GROW_PROFILE_NAME` and
+`TENT_SIZE_M2` live in the same profile and tab — separate, purely
+cosmetic fields for the dashboard header that don't feed the decision
+engine.
 
 ## Light schedule
 
@@ -105,7 +107,8 @@ sensor data"** on the history tab, exports that complete table.
 
 ## History charts
 
-A second dashboard tab, **history**:
+A second dashboard tab, **history** (a third, **profile**, covers editing
+the grow profile — see above):
 
 - **Daily readings** — temp/humidity/soil moisture for a chosen UTC day,
   30-minute or 1-hour buckets. Temperature on the left axis (°C),
@@ -120,9 +123,26 @@ A second dashboard tab, **history**:
 Charts are aggregated server-side (`GET /api/charts/day`/`week`, backed
 by `backend/chart_data.py`) rather than shipping raw rows to average in
 the browser — a day is 4,000+ rows, a week 30,000+. A bucket with no
-readings renders as a gap, never zero or interpolated. Hand-rolled inline
-SVG, no charting library, no CDN — the dashboard keeps working with no
-internet access.
+readings renders as a gap, never zero or interpolated. Rendered with
+Chart.js (see "CDN dependency" below) - its own tooltip fires on tap as
+well as hover, so exact values are reachable on a phone with no custom
+touch-target code needed.
+
+## CDN dependency
+
+The dashboard loads four libraries from a CDN: **Chart.js** (+ its
+annotation plugin, for the average reference lines) for the history
+charts, **Lucide** for every icon, **Motion** for a handful of UI
+transitions (the offline/stale banners, tab switching, pending
+indicators), and **Google Fonts** (Inter + JetBrains Mono) for type. This
+is a deliberate departure from this project's earlier "zero CDN, works
+with no internet access" stance - accepted so the UI can use a real icon
+set, real charts, and a real animation library instead of hand-rolled
+equivalents. See `docs/DECISIONS.md` for the reasoning and what it costs:
+the dashboard still loads and the live/manual controls still work with no
+internet access, but icons render blank, charts show a "charts
+unavailable" message, fonts fall back to the OS default, and the handful
+of Motion-driven transitions instantly snap instead of animating.
 
 ## Repository layout
 
@@ -160,6 +180,18 @@ cd backend
 pytest
 ```
 
+### Installing the dashboard as an app
+
+The dashboard ships a web app manifest (`backend/static/manifest.json`) and
+icons, so Chrome/Chromium offers a real **Install** button in the address
+bar — it opens in its own chromeless window from a desktop/taskbar icon,
+same as a native app, with no service worker or offline support involved.
+This works automatically over `https://` or `http://localhost`; on a plain
+LAN address (`http://192.168.x.x:8000`) Chrome won't offer the install
+button since that isn't a secure context, but **⋮ menu → Save and share →
+Create shortcut → Open as window** gives the same chromeless window
+regardless, no manifest required.
+
 ## Flashing the firmware
 
 ```bash
@@ -181,7 +213,8 @@ constants to what you actually measured and reflash.
 |---|---|---|
 | `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
 | `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading, last 20 activity-log entries |
-| `GET /api/profile` | Dashboard | display-only grow profile name/tent size for the header, sourced from `.env` |
+| `GET /api/profile` | Dashboard | the active grow profile (every decision-engine threshold plus the cosmetic name/tent size) |
+| `POST /api/profile` | Dashboard | save an edited grow profile (admin-only) — persists to the database, survives a restart |
 | `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
 | `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |

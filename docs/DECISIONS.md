@@ -6,9 +6,12 @@ was tried before landing here.
 
 ## Decision engine
 
-- `decide_relay_state(reading, previous_state)` is pure and stateless:
-  every threshold is an absolute grow-profile constant (`.env`), never a
-  rolling baseline or history lookup. Same reading, same decision, always.
+- `decide_relay_state(reading, previous_state, profile)` is pure and
+  stateless: every threshold comes from the `profile` argument, an
+  absolute grow-profile value (no rolling baseline or history lookup).
+  Same reading, same profile, same decision, always. The profile itself
+  is `main.py`'s problem (see "Grow profile editor" below) - the function
+  never reads `.env` or the database directly.
 - Temperature is a two-step ladder (fan alone, then AC) mirroring
   humidity's high/low split; `TEMP_LOW_THRESHOLD_C` mirrors humidity's
   low-branch reasoning (pull in warmer room air instead of cooling a tent
@@ -66,6 +69,44 @@ was tried before landing here.
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 
+## Grow profile editor
+
+- Every decision-engine threshold, plus `ALERT_TEMP_C` and the cosmetic
+  `GROW_PROFILE_NAME`/`TENT_SIZE_M2` fields, are one editable "grow
+  profile" (`GrowProfileIn`/`GrowProfileOut` in `models.py`), live-editable
+  from the dashboard's **profile** tab (admin-only, like every other
+  mutating route) - not a code or `.env` change.
+- Firmware-only safety settings (`EMERGENCY_TEMP_C`, `SOIL_ADC_DRY`/`WET`,
+  `MAX_PUMP_RUN_SECONDS`, `PUMP_COOLDOWN_SECONDS`) are deliberately **not**
+  part of this profile - there is no runtime channel for the backend to
+  push config to the ESP32 at all (telemetry responses only ever carry
+  relay commands), so editing them would silently do nothing. Light/
+  exhaust schedule values aren't part of it either - they're already
+  editable via their own dedicated panels, not a decision-engine threshold.
+- Persists to the database (`GrowProfileRow`, a singleton row fixed at
+  `id=1`) rather than living in-memory like every other runtime setting -
+  this one was deliberately asked to survive a restart, unlike mode or the
+  light/exhaust schedules, which reset to their `.env` default on purpose.
+  `.env` is read only as the very first boot's default, before any save
+  has ever happened; once `GrowProfileRow` exists, `.env` is never
+  consulted again for this value.
+- On startup, a missing `GrowProfileRow` leaves `AppState.grow_profile` at
+  its `.env`-derived default *without writing a row* - a DB row should
+  only ever be created by an explicit `POST /api/profile`, mirroring the
+  "no surprise actuation on a fresh deploy" rationale already used for the
+  light/exhaust schedules.
+- `GrowProfileIn`'s `@model_validator` enforces the same threshold
+  orderings the UI implies (humidity low < high, temp low < fan &le; ac,
+  alert &ge; temp-ac) so a nonsensical profile is rejected with `422`
+  rather than silently producing an always-on or always-off relay.
+- One consolidated `"grow profile updated: field old->new, ..."`
+  activity-log entry per save, not one per changed field like light/
+  exhaust schedule changes - up to 10 fields can change in a single save,
+  which would otherwise flood the 20-entry live feed. Listing every
+  changed field's old->new value in that one entry keeps it inspectable
+  without diffing two `GET /api/profile` responses by hand. Nothing is
+  logged for a save that doesn't actually change any value.
+
 ## Light schedule
 
 - Own ESP32 relay, own field on `RelayState` — never touched by
@@ -114,10 +155,9 @@ was tried before landing here.
   day, so the intraday pattern stays visible.
 - Dual y-axis: temperature (°C) on the left, humidity + soil moisture
   (both already %) sharing the right.
-- Hand-rolled inline SVG, no charting library — consistent with the
-  dashboard's no-external-dependency stance, so it keeps working with no
-  internet access. Date/week pickers are native `<input>` types. All
-  chart windows are UTC, matching the rest of the backend.
+- Rendered with Chart.js (see "Frontend" below for why) rather than
+  hand-rolled SVG. Date/week pickers are native `<input>` types. All chart
+  windows are UTC, matching the rest of the backend.
 
 ## Dashboard authentication / roles
 
@@ -144,8 +184,51 @@ was tried before landing here.
 
 ## Frontend
 
-- No external font/CDN dependency — the dashboard works with no internet
-  access.
+- **CDN libraries (Chart.js, Lucide, Motion, Google Fonts), reversing the
+  earlier "zero CDN, works with no internet access" stance.** Chosen
+  deliberately over hand-rolled equivalents for real charts/icons/
+  animation/type, accepting that those four things now need internet
+  access to look right on first load. The rest of the dashboard doesn't
+  pay that cost: every CDN script is loaded defensively (`CHARTS_AVAILABLE
+  = !!window.Chart` before any `Chart.*` call, `if (window.lucide)` before
+  `createIcons()`, a `runMotion()` wrapper that jumps straight to the end
+  state if `window.__animate` never showed up) so a blocked/offline CDN
+  degrades each feature independently - icons render blank, charts show a
+  "charts unavailable" message, Motion-driven transitions snap instantly,
+  fonts fall back to the OS default - rather than a thrown error from one
+  missing script stopping every other `<script>` below it in the same
+  file, which would otherwise take out live polling and every control
+  along with it.
+- **Chart.js replaces the hand-rolled inline-SVG line/pie charts.** Real
+  interactive tooltips that fire on tap as well as hover
+  (`interaction: {mode: "nearest", intersect: false}`) replace the custom
+  invisible-hit-circle-per-point mechanism the SVG version needed to get
+  the same result on a touchscreen. The average reference lines move to
+  `chartjs-plugin-annotation` instead of hand-drawn dashed `<line>`
+  elements, and the per-series average now lives in Chart.js's own legend
+  (`plugins.legend.labels` text) instead of a separately hand-built one.
+  The light-schedule pie's edge cases (`on_hours` at 0 or 24) no longer
+  need manual branching - a zero-length doughnut slice just renders
+  invisibly, leaving a full circle of the other color.
+- **Lucide replaces every hand-pasted inline `<path>` icon.** Each icon is
+  now a single `<i data-lucide="name">` element, replacing several lines
+  of hand-copied SVG path data; `lucide.createIcons()` swaps every one for
+  a real `<svg>` in place, carrying over whatever `width`/`height`/
+  `stroke-width` attributes were set on the `<i>` - existing CSS that
+  targeted `svg` as a child (`.section-title svg`'s icon-chip background,
+  `.readout .icon`'s color) keeps working unmodified, since the generated
+  element is still literally an `<svg>` in the same spot in the DOM.
+- **Motion animates a handful of specific transitions, not everything.**
+  The offline/stale banners now animate height to/from a measured `"auto"`
+  (something plain CSS can't do without a fixed max-height guess) via
+  `animate(el, {height: "auto", ...})`, replacing the `grid-template-rows:
+  0fr/1fr` trick that worked around that limitation. Tab switching gets a
+  short fade+slide. The export/activity-export/profile-save pending
+  indicators fade in/out instead of snapping. Continuous looping
+  animations (the status-dot pulses, the manual-mode banner's gradient
+  shift) deliberately stay plain CSS `@keyframes` - Motion's `animate()`
+  is suited to one-off triggered transitions, not infinite loops, so there
+  was no reason to move those.
 - "Backend unreachable" (a failed fetch) and "sensor offline" (`offline:
   true` from a reachable backend) are two visually distinct banners —
   different problems, different signals.
@@ -163,19 +246,6 @@ was tried before landing here.
   above everything, so the sticky header's `top` offset has to shift to
   `50px` under `body.manual` or the two would overlap - handled with the
   same class the rest of manual mode's visual treatment already toggles.
-- **Icon "chips" are pure CSS, no wrapper markup.** An SVG root is
-  box-generating like an `<img>`, so `.section-title svg` and `.readout
-  .icon` get their padded/rounded background directly - no `<span>`
-  wrapper needed around every one of the ~13 icons in the page to get a
-  colored badge look.
-- **Chart data points get a tap tooltip, not just hover `<title>`.**
-  `<title>` never fires on a touchscreen, so a chart's exact values were
-  effectively undiscoverable on mobile. Each point already carries a
-  `<title>` for desktop mouse users; a second, larger (r=11 vs. the
-  visible r=2.5 dot) invisible hit circle sits on top, wired to a small
-  fixed-position tooltip shown on `pointerdown` and dismissed by tapping
-  anywhere else - large enough to reliably hit with a finger without
-  visually enlarging the dot itself.
 - **A `--tap: 44px` token, applied as `min-height` across every button,
   select, and toggle** - the standard minimum comfortable touch target
   (Apple/Google guidance), rather than sizing controls for a mouse cursor

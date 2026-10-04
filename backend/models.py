@@ -104,6 +104,33 @@ class ExhaustStatus(BaseModel):
     reported: Optional[bool] = None
 
 
+class GrowProfileIn(BaseModel):
+    humidity_high_threshold: float = PydanticField(ge=0, le=100)
+    humidity_low_threshold: float = PydanticField(ge=0, le=100)
+    temp_fan_threshold_c: float = PydanticField(ge=-10, le=50)
+    temp_ac_threshold_c: float = PydanticField(ge=-10, le=50)
+    temp_low_threshold_c: float = PydanticField(ge=-10, le=50)
+    soil_moisture_low_threshold: float = PydanticField(ge=0, le=100)
+    soil_moisture_hysteresis: float = PydanticField(gt=0, le=50)
+    alert_temp_c: float = PydanticField(ge=-10, le=60)
+    grow_profile_name: str = PydanticField(min_length=1, max_length=100)
+    tent_size_m2: Optional[str] = PydanticField(default=None, max_length=50)
+
+    @model_validator(mode="after")
+    def _thresholds_make_sense(self) -> "GrowProfileIn":
+        if self.humidity_low_threshold >= self.humidity_high_threshold:
+            raise ValueError("humidity_low_threshold must be less than humidity_high_threshold")
+        if not (self.temp_low_threshold_c < self.temp_fan_threshold_c <= self.temp_ac_threshold_c):
+            raise ValueError("temp_low_threshold_c must be less than temp_fan_threshold_c, which must be <= temp_ac_threshold_c")
+        if self.alert_temp_c < self.temp_ac_threshold_c:
+            raise ValueError("alert_temp_c must be >= temp_ac_threshold_c")
+        return self
+
+
+class GrowProfileOut(GrowProfileIn):
+    pass
+
+
 class HaStatus(BaseModel):
     # None = not checked yet (e.g. right after backend startup, before the
     # first scheduled health check completes) - distinct from a known-bad
@@ -177,3 +204,25 @@ class ActivityLogRow(SQLModel, table=True):
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
     message: str
     actor: str
+
+
+class GrowProfileRow(SQLModel, table=True):
+    """Singleton settings row: the dashboard-saved grow profile, overriding
+    the .env defaults once a user has saved any edit. Always upserted at a
+    fixed id=1 - there is exactly one active profile, never a history of
+    them. No row exists until the first POST /api/profile; until then,
+    AppState.grow_profile just holds the in-memory .env-derived default."""
+
+    __tablename__ = "grow_profile"
+
+    id: int = Field(default=1, primary_key=True)
+    humidity_high_threshold: float
+    humidity_low_threshold: float
+    temp_fan_threshold_c: float
+    temp_ac_threshold_c: float
+    temp_low_threshold_c: float
+    soil_moisture_low_threshold: float
+    soil_moisture_hysteresis: float
+    alert_temp_c: float
+    grow_profile_name: str
+    tent_size_m2: Optional[str] = None

@@ -21,8 +21,10 @@ reading.
 Every rule below compares the current reading directly against a fixed
 "grow profile" threshold - there's no baseline or history lookup. The
 same reading always produces the same decision, and retuning for a
-different plant/stage/tent is purely an env-var edit (see
-`backend/.env.example`).
+different plant/stage/tent is a live edit from the dashboard's **profile**
+tab - no restart needed, and it's saved to the database so it survives
+one. `backend/.env.example` only sets the first-run default, before
+anyone has ever saved a profile.
 
 ## Humidity rules
 
