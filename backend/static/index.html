@@ -665,6 +665,7 @@
     padding: 8px 12px;
     border-radius: var(--radius-sm);
     width: 100%;
+    color-scheme: dark;
   }
 
   .profile-field input:focus { outline: 1px solid var(--border-strong); }
@@ -1122,6 +1123,10 @@
         <label class="meta" for="profile-tent-size">tent size (m&sup2;)</label>
         <input type="text" id="profile-tent-size" maxlength="50" placeholder="e.g. 1.2x1.2">
       </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-start-date">grow start date</label>
+        <input type="date" id="profile-start-date">
+      </div>
     </div>
   </div>
 
@@ -1215,6 +1220,7 @@
   var PROFILE_FIELDS = {
     "profile-name": { api: "grow_profile_name", type: "string" },
     "profile-tent-size": { api: "tent_size_m2", type: "string" },
+    "profile-start-date": { api: "start_date", type: "string" },
     "profile-humidity-high": { api: "humidity_high_threshold", type: "number" },
     "profile-humidity-low": { api: "humidity_low_threshold", type: "number" },
     "profile-temp-fan": { api: "temp_fan_threshold_c", type: "number" },
@@ -1487,9 +1493,25 @@
       });
   }
 
+  // Day 1 = start_date itself, computed in UTC to match every other date
+  // in this dashboard (chart windows, todayUtcDateString(), etc.). A
+  // future start_date (grow hasn't begun yet) returns null rather than a
+  // negative/zero count.
+  function growDayNumber(startDateStr) {
+    if (!startDateStr) return null;
+    var start = new Date(startDateStr + "T00:00:00Z");
+    if (isNaN(start.getTime())) return null;
+    var now = new Date();
+    var todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    var daysSinceStart = Math.floor((todayUtc - start.getTime()) / 86400000);
+    return daysSinceStart >= 0 ? daysSinceStart + 1 : null;
+  }
+
   function applyProfileLabel(profile) {
     var label = profile.grow_profile_name || "Custom grow profile";
     if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
+    var dayNumber = growDayNumber(profile.start_date);
+    if (dayNumber != null) label += " · day " + dayNumber;
     document.getElementById("profile-label").textContent = label;
   }
 

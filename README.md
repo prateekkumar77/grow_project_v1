@@ -58,10 +58,11 @@ Retune these from the dashboard's **profile** tab at any time — no
 restart needed, and the edit is saved to the database so it survives one.
 `backend/.env.example` (`HUMIDITY_HIGH_THRESHOLD` etc.) only sets the
 *first-run* default, before anyone has ever saved a profile; editing it
-after that has no effect on a running system. `GROW_PROFILE_NAME` and
-`TENT_SIZE_M2` live in the same profile and tab — separate, purely
-cosmetic fields for the dashboard header that don't feed the decision
-engine.
+after that has no effect on a running system. `GROW_PROFILE_NAME`,
+`TENT_SIZE_M2`, and `GROW_START_DATE` live in the same profile and tab —
+purely cosmetic fields that don't feed the decision engine. Setting a
+start date shows a "day N" counter in the dashboard header (day 1 = that
+date); leave it blank to omit the counter entirely.
 
 ## Light schedule
 

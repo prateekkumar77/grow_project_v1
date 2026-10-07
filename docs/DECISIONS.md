@@ -72,10 +72,27 @@ was tried before landing here.
 ## Grow profile editor
 
 - Every decision-engine threshold, plus `ALERT_TEMP_C` and the cosmetic
-  `GROW_PROFILE_NAME`/`TENT_SIZE_M2` fields, are one editable "grow
-  profile" (`GrowProfileIn`/`GrowProfileOut` in `models.py`), live-editable
-  from the dashboard's **profile** tab (admin-only, like every other
-  mutating route) - not a code or `.env` change.
+  `GROW_PROFILE_NAME`/`TENT_SIZE_M2`/`GROW_START_DATE` fields, are one
+  editable "grow profile" (`GrowProfileIn`/`GrowProfileOut` in
+  `models.py`), live-editable from the dashboard's **profile** tab
+  (admin-only, like every other mutating route) - not a code or `.env`
+  change.
+- `start_date` derives a "day N" counter (day 1 = that date) shown in the
+  dashboard header - computed client-side from the already-returned
+  profile rather than as a field `GET /api/profile` serves pre-computed,
+  since it only changes once a day and the frontend already has
+  everything it needs. A future `start_date` (grow hasn't started yet)
+  shows no counter rather than a negative/zero one.
+- **Adding `start_date` to an already-shipped `grow_profile` table needed
+  a one-time `ALTER TABLE ... ADD COLUMN`** (`_ensure_grow_profile_
+  start_date_column()` in `main.py`, run on every startup before the
+  table is used) - `SQLModel.metadata.create_all()` only creates missing
+  *tables*, never adds a column to one that already exists, so a database
+  with a profile saved before this field existed would otherwise fail
+  every profile load/save with "no such column: start_date". Checked via
+  `PRAGMA table_info` so it's a no-op both for a brand-new database
+  (`create_all()` above already created the table with every current
+  column) and for a database that's already been migrated once.
 - Firmware-only safety settings (`EMERGENCY_TEMP_C`, `SOIL_ADC_DRY`/`WET`,
   `MAX_PUMP_RUN_SECONDS`, `PUMP_COOLDOWN_SECONDS`) are deliberately **not**
   part of this profile - there is no runtime channel for the backend to

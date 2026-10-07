@@ -1,5 +1,5 @@
 """SQLModel tables and shared pydantic schemas used across the backend."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
@@ -115,6 +115,10 @@ class GrowProfileIn(BaseModel):
     alert_temp_c: float = PydanticField(ge=-10, le=60)
     grow_profile_name: str = PydanticField(min_length=1, max_length=100)
     tent_size_m2: Optional[str] = PydanticField(default=None, max_length=50)
+    # Purely cosmetic, like grow_profile_name/tent_size_m2 - the dashboard
+    # derives a "day N" counter from it, but it's never read by the
+    # decision engine.
+    start_date: Optional[date] = None
 
     @model_validator(mode="after")
     def _thresholds_make_sense(self) -> "GrowProfileIn":
@@ -226,3 +230,4 @@ class GrowProfileRow(SQLModel, table=True):
     alert_temp_c: float
     grow_profile_name: str
     tent_size_m2: Optional[str] = None
+    start_date: Optional[date] = None

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
@@ -65,6 +65,9 @@ HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 # per grow without touching code.
 GROW_PROFILE_NAME = os.getenv("GROW_PROFILE_NAME", "Custom grow profile")
 TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
+# Optional - the dashboard derives a "day N" counter from this, but it's
+# otherwise as cosmetic as the two above. Blank by default; YYYY-MM-DD.
+GROW_START_DATE = os.getenv("GROW_START_DATE", "")
 
 # Light schedule defaults. Starts with the schedule OFF (light under
 # manual control, off) so a fresh deploy never starts cycling a light
@@ -103,6 +106,7 @@ def _default_grow_profile() -> GrowProfileOut:
         alert_temp_c=ALERT_TEMP_C,
         grow_profile_name=GROW_PROFILE_NAME,
         tent_size_m2=TENT_SIZE_M2 or None,
+        start_date=date.fromisoformat(GROW_START_DATE) if GROW_START_DATE else None,
     )
 
 
@@ -230,10 +234,27 @@ def get_session():
         yield session
 
 
+def _ensure_grow_profile_start_date_column() -> None:
+    """SQLModel.metadata.create_all() only creates missing tables - it never
+    adds a column to one that already exists. grow_profile shipped before
+    start_date existed, so an already-deployed database's table is missing
+    it; without this, loading or saving the profile there would fail with
+    "no such column: start_date". A fresh deploy's create_all() above
+    already creates the table with every current column, so this is a
+    no-op for it (PRAGMA table_info on a table that doesn't exist yet
+    returns nothing)."""
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(grow_profile)")}
+        if columns and "start_date" not in columns:
+            conn.exec_driver_sql("ALTER TABLE grow_profile ADD COLUMN start_date DATE")
+            conn.commit()
+
+
 @app.on_event("startup")
 def on_startup():
     os.makedirs(os.path.dirname(DATABASE_URL.replace("sqlite:///", "")) or ".", exist_ok=True)
     SQLModel.metadata.create_all(engine)
+    _ensure_grow_profile_start_date_column()
     # No row yet means no dashboard save has ever happened - leave
     # app_state.grow_profile at its .env-derived default rather than
     # writing one now; a DB row should only ever appear from an explicit
