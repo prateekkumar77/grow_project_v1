@@ -6,9 +6,9 @@
 // for pasting into firmware/include/ir_codes.h. See "Capturing your AC's
 // IR codes" in README.md for the full walkthrough.
 //
-// Wire the IR module's IRin pin to kRecvPin below (matching this
-// project's IR_RECV_PIN wiring notes in config.h/README), build and flash
-// just this environment:
+// Wire the IR module's IRin pin to GPIO 32 (matching this project's
+// IR_RECV_PIN wiring notes in config.h/README), build and flash just
+// this environment:
 //   pio run -e ir_capture -t upload && pio device monitor
 // then point your real AC remote at the module and press a button. Each
 // press prints a human-readable summary and a ready-to-paste raw array -
@@ -18,11 +18,11 @@
 #include <IRrecv.h>
 #include <IRutils.h>
 
-const uint16_t kRecvPin = 32;  // matches the IRin wiring documented in README.md
-const uint16_t kCaptureBufferSize = 1024;
-const uint8_t kTimeoutMs = 50;
-
-IRrecv irrecv(kRecvPin, kCaptureBufferSize, kTimeoutMs, true);
+// Passed directly into the constructor below rather than named constants -
+// IRrecv.h already declares its own globals named kTimeoutMs and the like
+// for its default constructor arguments, and this file doesn't need named
+// constants badly enough to risk colliding with whatever else it defines.
+IRrecv irrecv(/*recvpin=*/32, /*bufsize=*/1024, /*timeout=*/50, /*save_buffer=*/true);
 decode_results results;
 
 void setup() {
