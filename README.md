@@ -1,9 +1,10 @@
 # Grow tent automation system
 
 Automated environmental control for a home grow tent: an ESP32 reports
-sensor readings, a FastAPI backend decides what the relays should do, and
-a browser dashboard shows/controls it, with optional Home Assistant /
-Google Home integration for the AC. The dashboard is a single HTML file
+sensor readings, a FastAPI backend decides what the relays (and the AC,
+via IR) should do, and a browser dashboard shows/controls it, with
+optional Home Assistant integration for its own reachability badge. The
+dashboard is a single HTML file
 with no build step - no bundler, no npm install, just edit and reload -
 responsive down to a small phone, with a sticky status header and
 touch-sized controls throughout. It does load a handful of CDN libraries
@@ -208,6 +209,37 @@ baud), dip the probe fully in water and note the printed raw value
 (`soil raw=<n> -> <pct>%`), do the same in dry air, then set both
 constants to what you actually measured and reflash.
 
+### Capturing your AC's IR codes
+
+The AC is driven by an IR transmitter (an Adafruit 38KHz IR Transceiver,
+wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14), replaying raw
+codes captured from your actual remote — not a protocol library, so it
+works with any AC brand. `firmware/include/ir_codes.h` ships with
+placeholder codes that control nothing; capture your own before relying
+on it:
+
+1. Wire the module's IRin pin to GPIO 32 (also VIN/GND as normal) —
+   needed for this one-time capture only.
+2. Build and flash the capture utility, a **separate** PlatformIO
+   environment from the main firmware:
+   ```bash
+   cd firmware
+   pio run -e ir_capture -t upload
+   pio device monitor
+   ```
+3. Point your real AC remote at the module and press the button for the
+   state you want captured — typically **ON** at whatever temperature/mode
+   you'll actually run it at, then **OFF**. Most AC remotes send a
+   complete state (power + temperature + mode + fan speed) on every press
+   rather than a simple toggle, so whatever was showing on the remote when
+   you pressed ON is what gets replayed every time the dashboard turns the
+   AC on — there's no separate temperature control.
+4. Each press prints a ready-to-paste raw array to Serial. Copy the ON
+   array into `AC_ON_RAW_CODE` and the OFF array into `AC_OFF_RAW_CODE` in
+   `firmware/include/ir_codes.h`.
+5. Reflash the **main** firmware (`pio run -t upload`, the default
+   `esp32dev` environment) — the capture utility is never part of it.
+
 ## API
 
 | Method & path | Caller | Purpose |
@@ -253,25 +285,33 @@ Basic Auth is stateless: no session, no timeout, no working "log out" —
 staying logged in is just the browser caching credentials for as long as
 it wants to.
 
-## Home Assistant / Google Home
+## AC control
 
-Fan, exhaust, pump, and light are physical ESP32 relays. **AC is the one
-exception** — a Google Home device (smart plug or native smart
-AC/mini-split) with no ESP32 relay, driven entirely through Home
-Assistant (`backend/ha_client.py`) as part of the decision engine's
-humidity/temperature escalation. Set `HA_AC_ENTITY` to the entity ID and
-`HA_AC_DOMAIN` to `switch` (smart plug) or `climate` (native smart AC).
+Fan, exhaust, pump, light, and now AC are all directly ESP32-driven — the
+first four via physical relays, AC via an IR transmitter replaying raw
+codes captured from the real remote (see "Capturing your AC's IR codes"
+above). AC is still part of the decision engine's humidity/temperature
+escalation exactly as before; only the actuation mechanism changed, from
+a push to Home Assistant to a command in the same telemetry response the
+ESP32 already polls for fan/pump/light.
 
-A Home Assistant outage never blocks `/api/telemetry` — failures are
-logged and ignored, and AC holds its last state until HA comes back. One
-consequence: the firmware's offline emergency-temperature floor can only
-drive a physical relay, so AC gets no such backstop while offline.
+IR is fire-and-forget like any IR remote — there's no confirmation
+channel, so `reported_relay_state.ac` is "what the ESP32 last told the AC
+to do," not a verified real state. The firmware only transmits on an
+actual on→off or off→on transition (never every telemetry cycle), since
+unlike a relay pin, re-sending the same IR code isn't a harmless no-op.
 
 There's no separate notification channel — no speaker/media device is
 connected, so crossing `ALERT_TEMP_C` forces fan and AC on directly
 instead of announcing anything.
 
-The dashboard shows a live "is Home Assistant reachable" badge, checked
-on its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`,
-default 30s) — never inline with a request, so a slow/hanging HA can't
-add latency to a page load.
+## Home Assistant
+
+No longer used for AC (see above) — Home Assistant integration is now
+just a reachability badge on the dashboard (`backend/ha_client.py`),
+kept in case this project uses HA for something else later. Checked on
+its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default
+30s), never inline with a request, so a slow/hanging HA can't add latency
+to a page load. An HA outage has no effect on anything else — it never
+blocked `/api/telemetry` even when it did drive AC, and now has even
+less to do with the control loop.

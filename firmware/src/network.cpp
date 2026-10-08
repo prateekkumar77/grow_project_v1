@@ -21,8 +21,9 @@ bool network_try_connect() {
 }
 
 bool network_post_telemetry(const Reading& reading, const RelayState& actual,
-                             float pumpCooldownRemainingS, String& outMode,
-                             RelayState& outCommanded) {
+                             bool acActual, float pumpCooldownRemainingS,
+                             String& outMode, RelayState& outCommanded,
+                             bool& outAcCommanded) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
   StaticJsonDocument<256> req;
@@ -35,6 +36,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   relayState["exhaust"] = actual.exhaust;
   relayState["pump"] = actual.pump;
   relayState["light"] = actual.light;
+  relayState["ac"] = acActual;
 
   String body;
   serializeJson(req, body);
@@ -66,6 +68,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   outCommanded.exhaust = cmd["exhaust"] | false;
   outCommanded.pump = cmd["pump"] | false;
   outCommanded.light = cmd["light"] | false;
+  outAcCommanded = cmd["ac"] | false;
 
   return true;
 }

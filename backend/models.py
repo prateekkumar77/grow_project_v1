@@ -13,12 +13,14 @@ class RelayState(BaseModel):
     # its own run/interval duty-cycle schedule (or manual control when
     # that schedule is off). See ExhaustStatus below.
     exhaust: bool = False
-    # AC has no physical ESP32 relay - it's a Google Home device driven
-    # entirely through Home Assistant (see ha_client.set_ac()). Unlike
-    # exhaust, it IS part of decide_relay_state()'s humidity/temperature
-    # escalation. The ESP32 never reports a real value for this field (no
-    # pin to read), so `reported_relay_state.ac` is overridden with the
-    # last Home-Assistant-confirmed state instead.
+    # Driven by the ESP32 via an IR transmitter (see firmware/src/ir_ac.*),
+    # not a physical relay - replaying raw codes captured from the real AC
+    # remote, so it's fire-and-forget like every other commanded value: the
+    # ESP32 reports back what it last told the AC to do, not a confirmed
+    # real state (IR has no feedback channel). Unlike exhaust, it IS part
+    # of decide_relay_state()'s humidity/temperature escalation. No longer
+    # related to Home Assistant, which stays wired in for its own
+    # reachability badge only.
     ac: bool = False
     pump: bool = False
     # Grow light. Has its own ESP32 relay like fan/pump, but is never

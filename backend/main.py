@@ -7,13 +7,12 @@ import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
-import ha_client
 from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
 from chart_data import bucket_by_step
 from decision_engine import GrowProfile
@@ -129,12 +128,6 @@ class AppState:
         # 0 unless the firmware is currently refusing a commanded pump-on
         # due to its own post-cap cooldown - see post_telemetry.
         self.pump_cooldown_remaining_s: float = 0.0
-        # The AC has no physical relay - it's controlled entirely through
-        # Home Assistant. This tracks the last state we successfully
-        # confirmed HA applied, so /api/status can report real AC state
-        # instead of the ESP32's meaningless "ac" field, and so we only
-        # call HA when the desired state actually changes.
-        self.last_ha_ac_state: Optional[bool] = None
         # Light: independent of `mode` entirely. Either the schedule
         # decides (is_light_on, recomputed fresh every time - no stored
         # "next toggle" state) or, when the schedule is off, this manual
@@ -308,27 +301,8 @@ def _exhaust_status(now: datetime) -> ExhaustStatus:
     )
 
 
-def _sync_ac_to_ha(ac_on: bool) -> None:
-    """Pushes the AC's desired state to Home Assistant - this is the only
-    path that actually controls it, since it has no ESP32 relay. Skips the
-    call if we already believe HA is in that state, and only marks it
-    confirmed on success, so a failed call gets retried on the next cycle
-    instead of silently getting stuck out of sync."""
-    with app_state.lock:
-        if app_state.last_ha_ac_state == ac_on:
-            return
-    try:
-        if ha_client.set_ac(ac_on):
-            with app_state.lock:
-                app_state.last_ha_ac_state = ac_on
-    except Exception:  # noqa: BLE001
-        logger.exception("AC sync to Home Assistant failed")
-
-
 @app.post("/api/telemetry", response_model=TelemetryOut)
-def post_telemetry(
-    payload: TelemetryIn, background_tasks: BackgroundTasks, session: Session = Depends(get_session)
-):
+def post_telemetry(payload: TelemetryIn, session: Session = Depends(get_session)):
     now = datetime.utcnow()
     reading = SensorReading(
         temp_c=payload.temp_c, humidity=payload.humidity, soil_moisture=payload.soil_moisture
@@ -406,11 +380,6 @@ def post_telemetry(
         session.add(row)
         session.commit()
 
-    # Backgrounded so a slow/unreachable Home Assistant never delays the
-    # response the ESP32 is waiting on (it has its own ~5s HTTP timeout,
-    # the same order of magnitude as HA_REQUEST_TIMEOUT_SECONDS).
-    background_tasks.add_task(_sync_ac_to_ha, commanded.ac)
-
     return TelemetryOut(mode=mode, relay_state=commanded)
 
 
@@ -422,13 +391,7 @@ def get_status():
             app_state.last_seen is None
             or (now - app_state.last_seen).total_seconds() > OFFLINE_THRESHOLD_SECONDS
         )
-        # The ESP32 has no "ac" relay pin at all (unlike fan/exhaust/pump) -
-        # its reported value is meaningless, so report our own
-        # last-confirmed Home Assistant state for ac instead - that's the
-        # only place the real AC state actually lives.
         reported = app_state.reported_relay_state
-        if reported is not None and app_state.last_ha_ac_state is not None:
-            reported = reported.model_copy(update={"ac": app_state.last_ha_ac_state})
 
         # Commanded light/exhaust state is recomputed fresh here (not read
         # from commanded_relay_state, which only updates on the ESP32's
@@ -638,26 +601,22 @@ def set_mode(payload: ModeIn, request: Request):
 
 
 @app.post("/api/relay")
-def set_relay(payload: RelayIn, background_tasks: BackgroundTasks, request: Request):
+def set_relay(payload: RelayIn, request: Request):
     with app_state.lock:
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
         app_state.relay_activity.update(app_state.commanded_relay_state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
-        result = {
+        # ac picks this up the same way fan/pump do - on the ESP32's next
+        # telemetry poll (~20s) - now that it's IR-driven by the ESP32
+        # itself rather than needing an immediate separate push to Home
+        # Assistant (which had no poll cycle of its own to piggyback on).
+        return {
             "relay": payload.relay,
             "state": payload.state,
             "commanded_relay_state": app_state.commanded_relay_state.model_dump(),
         }
-
-    if payload.relay == "ac":
-        # Unlike fan/pump, the ESP32 never picks this up on its own poll -
-        # there's no relay for it to poll. Push it now rather than waiting
-        # for the next telemetry cycle to (indirectly) trigger the sync.
-        background_tasks.add_task(_sync_ac_to_ha, payload.state)
-
-    return result
 
 
 @app.post("/api/light/schedule", response_model=LightStatus)

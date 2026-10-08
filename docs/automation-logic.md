@@ -7,11 +7,11 @@ tells it to do.
 
 Sections up through "Manual mode" cover **fan, AC, and pump** — the three
 outputs `decide_relay_state()` decides, only in **auto** mode. Fan and
-pump are physical ESP32 relays; AC has none and is driven through Home
-Assistant instead (see below). **Light and exhaust** run on their own
-schedules and are covered separately, further down — neither is ever
-touched by `decide_relay_state()`, auto/manual mode, or any sensor
-reading.
+pump are physical ESP32 relays; AC is an IR transmitter instead (see
+below) — all three are ESP32-driven either way. **Light and exhaust** run
+on their own schedules and are covered separately, further down — neither
+is ever touched by `decide_relay_state()`, auto/manual mode, or any
+sensor reading.
 
 ## What gets measured
 
@@ -75,41 +75,48 @@ All absolute tent temperature, not a rise relative to anything:
   (`pump_cooldown_remaining_s` in the telemetry payload), and the dashboard
   shows "cooldown ~Xs" instead while it's nonzero.
 
-## AC: no physical relay, controlled via Home Assistant
+## AC: an IR transmitter, not a relay
 
-Unlike fan and pump, the AC in this deployment is a Google Home device
-(a smart plug or native smart AC/mini-split), not something wired to an
-ESP32 relay. The decision engine's `ac` output is the same either way —
-what differs is how it gets applied:
+The AC has no physical ESP32 relay, but unlike before it's no longer a
+Home Assistant device either — it's driven by an IR transmitter wired
+directly to the ESP32 (`firmware/src/ir_ac.*`), replaying raw codes
+captured from the real AC remote (see `README.md`'s "Capturing your AC's
+IR codes"). The decision engine's `ac` output is unchanged; only how it
+gets applied changed:
 
-- **Fan / pump**: the ESP32 polls its commanded state on every telemetry
-  cycle and drives the physical relay itself.
-- **AC**: the backend pushes the state directly to Home Assistant
-  (`ha_client.set_ac()`, entity configured via `HA_AC_ENTITY`/
-  `HA_AC_DOMAIN`) whenever it changes — once from `/api/telemetry` in
-  auto mode, or immediately from `/api/relay` in manual mode, since
-  there's no ESP32 relay for a manual click to reach otherwise. The call
-  runs in the background so a slow or unreachable Home Assistant never
-  delays the ESP32's telemetry response.
-- `/api/status` reports the AC's last **Home Assistant-confirmed** state
-  as its "reported" value, since the ESP32 has no relay pin for it to
-  report at all.
+- **Fan / pump / AC**: all three now flow the same way — the ESP32 polls
+  its commanded state (including `ac`) on every telemetry cycle and
+  applies it itself. Fan/pump hold a relay pin; AC fires an IR code, but
+  only on an actual on→off or off→on transition, never every cycle
+  (unlike a relay pin, re-sending the same IR code isn't a harmless
+  no-op — many AC remotes send a full state packet on every press).
+- `/api/status` reports the ESP32's own `reported_relay_state.ac` as
+  "reported," the same as fan/pump. This is still not a *confirmed* real
+  state — IR is fire-and-forget, with no feedback channel telling the
+  ESP32 whether the AC actually responded — but it's at least "what we
+  last told it to do" rather than a value from a separate system (Home
+  Assistant) that could itself be unreachable.
 
-This does mean the AC loses the one piece of true offline resilience the
-other relays have: if the network or Home Assistant is down, the AC just
-stays wherever it last was, with no local device watching temperature for
-it. See the note on `EMERGENCY_TEMP_C` below.
+Because AC is now ESP32-driven like fan/pump, a network/backend outage no
+longer strands it mid-state waiting on a separate service the way a Home
+Assistant outage used to — the usual "holds its last commanded state
+while offline" behavior applies, same as any relay. One asymmetry
+remains, unchanged by this: `EMERGENCY_TEMP_C`'s offline failsafe (below)
+still only drives fan + exhaust locally, not AC, since extending it was
+out of scope for this change.
 
-Because AC control depends entirely on Home Assistant being reachable,
-the dashboard gives it its own panel, separate from the ESP32 relay tiles,
-with a live "is Home Assistant actually reachable right now" indicator.
-The backend checks this independently of any AC command - a background
-job (`scheduler._check_ha_connection`, every `HA_HEALTH_CHECK_INTERVAL_SECONDS`,
-default 30s) calls `ha_client.check_connection()` (`GET {HA_URL}/api/`,
-Home Assistant's own health-check endpoint) and caches the result. `GET
-/api/status` just reports that cached value instantly - the check never
-runs on a request path, so a slow or hanging Home Assistant can't add
-latency to a page load the way an inline check would.
+## Home Assistant: reachability badge only
+
+Home Assistant is no longer part of AC control at all — it's kept wired
+in purely for its own "is Home Assistant actually reachable right now"
+dashboard badge, in case this project uses HA for something else later.
+A background job (`scheduler._check_ha_connection`, every
+`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) calls
+`ha_client.check_connection()` (`GET {HA_URL}/api/`, Home Assistant's own
+health-check endpoint) and caches the result. `GET /api/status` just
+reports that cached value instantly - the check never runs on a request
+path, so a slow or hanging Home Assistant can't add latency to a page
+load the way an inline check would.
 
 ## Manual mode
 
@@ -209,7 +216,9 @@ connection:
   35.0°C — sanity-check this against your actual tent before trusting it):
   force the fan and exhaust on locally, as a one-way floor. This is not
   real climate control, just a last-resort heat cutoff while nothing else
-  is watching. **AC gets no such floor** - it has no physical relay for
-  this firmware-only logic to drive, so while offline it just holds
-  whatever it was last set to.
+  is watching. **AC gets no such floor** - not a hardware limitation
+  anymore (it has its own IR actuation path now, see above), just not
+  wired into this specific failsafe; while offline it holds whatever it
+  was last set to, same as fan/pump/light do for everything this floor
+  doesn't cover.
 - Everything else holds its last-commanded state while offline.

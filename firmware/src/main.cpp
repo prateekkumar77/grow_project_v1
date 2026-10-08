@@ -2,11 +2,13 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "ir_ac.h"
 #include "network.h"
 #include "relays.h"
 #include "sensors.h"
 
 static RelayController relays;
+static IrAcController acController;
 
 static unsigned long lastWifiAttemptMs = 0;
 static unsigned long wifiBackoffMs = WIFI_BACKOFF_MIN_MS;
@@ -19,6 +21,7 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   sensors_begin();
   relays.begin();
+  acController.begin();
   network_try_connect();
 }
 
@@ -53,12 +56,16 @@ static void runTelemetryCycle() {
   Serial.printf("soil raw=%d -> %.0f%%\n", reading.soil_raw, reading.soil_moisture);
 
   RelayState actual = relays.getState();
+  bool acActual = acController.getState();
   String mode;
   RelayState commanded;
+  bool acCommanded = acActual;
 
-  bool ok = network_post_telemetry(reading, actual, relays.pumpCooldownRemainingSeconds(), mode, commanded);
+  bool ok = network_post_telemetry(reading, actual, acActual, relays.pumpCooldownRemainingSeconds(),
+                                    mode, commanded, acCommanded);
   if (ok) {
     relays.applyCommand(commanded.fan, commanded.exhaust, commanded.pump, commanded.light);
+    acController.applyCommand(acCommanded);
   } else {
     // The instant a telemetry POST fails: kill the pump, unconditionally.
     relays.forcePumpOff();

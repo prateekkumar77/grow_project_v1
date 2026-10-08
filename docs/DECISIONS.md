@@ -59,13 +59,31 @@ was tried before landing here.
   offline-only `EMERGENCY_TEMP_C` (default 35°C). No notification channel
   exists — no speaker/media device is connected, so this is a direct
   cooling response, not an alert.
-- AC has no physical relay — it's a Google Home device pushed via Home
-  Assistant (`ha_client.set_ac()`, `HA_AC_ENTITY`/`HA_AC_DOMAIN`),
-  backgrounded so a slow HA call never delays `/api/telemetry`'s response
-  to the ESP32. `/api/status` reports the last HA-confirmed state, since
-  the ESP32 has no relay pin for AC to report a real value. HA
-  reachability is polled on its own background schedule
-  (`HA_HEALTH_CHECK_INTERVAL_SECONDS`), never inline with a request.
+- **AC moved from Home Assistant to a direct ESP32 IR transmitter**
+  (`firmware/src/ir_ac.*`), replaying raw codes captured from the real
+  remote rather than using a protocol-aware library - works with any AC
+  brand, at the cost of only reproducing the exact on/off state that was
+  captured (no temperature/mode control), which matches
+  `decide_relay_state()`'s own binary `ac` output exactly, so nothing was
+  actually given up. `commanded.ac` already traveled to the ESP32 inside
+  the same `relay_state` JSON fan/pump/light use (the field existed on
+  `RelayState` from the start; the firmware just ignored it) - no new
+  wire format needed, just a firmware that finally reads it. Chosen over
+  a protocol library (e.g. picking a known AC brand/IRremoteESP8266
+  protocol) specifically because the decision engine never needed
+  temperature/mode control, so there was no reason to take on that
+  complexity. Home Assistant stays wired in for its own reachability
+  badge only (`ha_client.check_connection()`), not removed outright, in
+  case this project uses HA for something else later - `ha_client.set_ac()`
+  and the `HA_AC_ENTITY`/`HA_AC_DOMAIN` env vars were removed as dead code
+  once nothing called them anymore.
+- IR is fire-and-forget, same limitation Home Assistant had: no
+  confirmation channel, so `reported_relay_state.ac` is "what we last
+  told it to do," not a verified real state. The firmware only
+  transmits on an actual on→off/off→on transition, never every
+  telemetry cycle - unlike a relay pin, re-sending the same IR code
+  isn't a harmless no-op (many AC remotes send a full state packet on
+  every press).
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 
@@ -251,10 +269,11 @@ was tried before landing here.
   different problems, different signals.
 - Manual mode gets a persistent top banner plus a background wash across
   every panel, not just a toggle change, so it's visually unmistakable.
-- AC gets its own panel (not a relay tile), with a live HA-reachability
-  badge, since it depends on Home Assistant rather than a local relay —
-  its "on" accent is teal to stay visually distinct from every other
-  relay's green/amber.
+- AC keeps its own panel (not a relay tile, even though it's ESP32-driven
+  like one now) since it's IR, not a GPIO pin - its "on" accent stays teal
+  to flag that distinction, visually separate from every other relay's
+  green/amber. The Home Assistant reachability badge moved to its own
+  small panel once it stopped sharing a panel with AC control.
 - **Sticky header, not a fixed one.** `position: sticky` keeps mode/
   connection status visible while scrolling a long panel list on a phone,
   without the extra complexity a `fixed` header brings (content needing a

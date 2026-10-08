@@ -32,6 +32,11 @@
 #define RELAY_LIGHT_PIN 33  // grow light - runs on its own backend-side schedule, no local logic
 #define RELAY_ACTIVE_LOW true  // most cheap relay boards trigger LOW = energized
 
+// AC - not a relay, an IR transmitter (Adafruit 38KHz IR Transceiver,
+// product 5990) replaying raw codes captured from the real AC remote. See
+// ir_codes.h and "Capturing your AC's IR codes" in README.md.
+#define IR_SEND_PIN 14
+
 // ---------------------------------------------------------------------------
 // Soil moisture calibration
 // Raw ADC reading with the sensor in dry air vs. fully in water.
