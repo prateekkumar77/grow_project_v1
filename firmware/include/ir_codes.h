@@ -2,32 +2,22 @@
 
 #include <stdint.h>
 
-// Raw IR timing codes captured from your actual AC remote - these are
-// PLACEHOLDERS (a short, meaningless blip) that will not control any real
-// air conditioner. See "Capturing your AC's IR codes" in README.md: build
-// and flash the `ir_capture` PlatformIO environment (`pio run -e
-// ir_capture -t upload`, not the main firmware), point your real remote
-// at the module's IR receiver, press ON then OFF, and paste each captured
-// array below in place of the placeholder - keep the `_LEN` lines as-is,
-// they compute themselves from whatever array you paste in.
+// IR code for your AC, captured from the real remote via the ir_capture
+// utility (see "Capturing your AC's IR codes" in README.md). Your AC uses
+// the COOLIX protocol - one IRremoteESP8266 recognizes natively, so this
+// is the decoded code (sendCOOLIX() in ir_ac.cpp), not ~200 raw timing
+// values. Still just two fixed states replayed as-is, not decoded into
+// individual temperature/mode/fan fields - whatever was set on the real
+// remote when you captured ON is what gets replayed every time, matching
+// decide_relay_state()'s own on/off-only output.
 //
-// Captured once per remote, not per AC setting: most AC remotes send a
-// complete state (power + temperature + mode + fan speed) on every button
-// press rather than a simple toggle, so whatever temperature/mode was
-// active on the real remote when you captured "on" is what gets replayed
-// every time - matching decide_relay_state()'s own on/off-only output, no
-// IR protocol knowledge required.
-//
-// (No PROGMEM here - unlike AVR Arduinos, the ESP32 has a unified address
-// space, so a plain `const` array at file scope already lives in flash.)
+// To recapture (different AC, or a different temperature/mode for ON):
+// rerun the ir_capture utility and copy whatever it prints as
+// `data = 0x......` for each button. If it ever prints "Protocol:
+// UNKNOWN" instead of a recognized name, there's no sendXXX() to call -
+// fall back to irsend.sendRaw(rawData, length, kHz) in ir_ac.cpp using
+// the raw array the tool always prints alongside the decoded form.
 
-const uint16_t AC_ON_RAW_CODE[] = {9000, 4500, 560, 560, 560, 1690, 560, 560};
-const uint16_t AC_OFF_RAW_CODE[] = {9000, 4500, 560, 1690, 560, 560, 560, 560};
-const uint16_t AC_ON_RAW_CODE_LEN = sizeof(AC_ON_RAW_CODE) / sizeof(AC_ON_RAW_CODE[0]);
-const uint16_t AC_OFF_RAW_CODE_LEN = sizeof(AC_OFF_RAW_CODE) / sizeof(AC_OFF_RAW_CODE[0]);
-
-// Standard IR carrier frequency - correct for the vast majority of
-// consumer IR remotes, including this module. The capture tool's output
-// prints the actual frequency it detected; change this only if that
-// differs from 38.
-const uint16_t AC_RAW_FREQUENCY_KHZ = 38;
+const uint64_t AC_ON_CODE = 0xB23F70;
+const uint64_t AC_OFF_CODE = 0xB27BE0;
+const uint16_t AC_CODE_BITS = 24;

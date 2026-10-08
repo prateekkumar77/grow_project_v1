@@ -11,9 +11,11 @@
 // this environment:
 //   pio run -e ir_capture -t upload && pio device monitor
 // then point your real AC remote at the module and press a button. Each
-// press prints a human-readable summary and a ready-to-paste raw array -
-// copy the array body into AC_ON_RAW_CODE or AC_OFF_RAW_CODE in
-// ir_codes.h, once for each button.
+// press prints a human-readable summary and a ready-to-paste raw array.
+// If the summary names a recognized protocol (e.g. "Protocol: COOLIX"),
+// copy its `Code` hex value into AC_ON_CODE or AC_OFF_CODE in ir_codes.h;
+// otherwise copy the raw array body into ir_codes.h and use sendRaw()
+// in ir_ac.cpp instead - see README.md for both paths.
 #include <Arduino.h>
 #include <IRrecv.h>
 #include <IRutils.h>

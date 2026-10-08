@@ -212,11 +212,10 @@ constants to what you actually measured and reflash.
 ### Capturing your AC's IR codes
 
 The AC is driven by an IR transmitter (an Adafruit 38KHz IR Transceiver,
-wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14), replaying raw
-codes captured from your actual remote — not a protocol library, so it
-works with any AC brand. `firmware/include/ir_codes.h` ships with
-placeholder codes that control nothing; capture your own before relying
-on it:
+wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14), replaying the
+exact ON/OFF codes captured from your actual remote. `firmware/include/
+ir_codes.h` ships with placeholder codes that control nothing; capture
+your own before relying on it:
 
 1. Wire the module's IRin pin to GPIO 32 (also VIN/GND as normal) —
    needed for this one-time capture only.
@@ -234,9 +233,21 @@ on it:
    rather than a simple toggle, so whatever was showing on the remote when
    you pressed ON is what gets replayed every time the dashboard turns the
    AC on — there's no separate temperature control.
-4. Each press prints a ready-to-paste raw array to Serial. Copy the ON
-   array into `AC_ON_RAW_CODE` and the OFF array into `AC_OFF_RAW_CODE` in
-   `firmware/include/ir_codes.h`.
+4. Each press prints to Serial. Two outcomes, depending on whether
+   IRremoteESP8266 recognizes your AC's protocol:
+   - **Protocol recognized** (prints e.g. `Protocol: COOLIX` and
+     `Code: 0xB23F70 (24 Bits)`) — the common case, and what this
+     project's own reference deployment got. Copy the `Code` hex value
+     into `AC_ON_CODE`/`AC_OFF_CODE` in `firmware/include/ir_codes.h`,
+     and call the matching `irsend.send<Protocol>(...)` method in
+     `firmware/src/ir_ac.cpp`'s `applyCommand()` (e.g. `sendCOOLIX(code,
+     bits)`) in place of whatever's there — check the exact method
+     signature in IRremoteESP8266's `IRsend.h` if the protocol differs
+     from COOLIX.
+   - **Protocol unrecognized** (prints `Protocol: UNKNOWN`) — paste the
+     raw timing array it still prints alongside (a ready-to-paste
+     `uint16_t rawData[...] = {...}` line) into `ir_codes.h` instead, and
+     use `irsend.sendRaw(array, length, 38)` in `ir_ac.cpp`.
 5. Reflash the **main** firmware (`pio run -t upload`, the default
    `esp32dev` environment) — the capture utility is never part of it.
 

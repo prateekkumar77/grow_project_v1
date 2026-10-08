@@ -13,10 +13,6 @@ void IrAcController::begin() {
 
 void IrAcController::applyCommand(bool on) {
   if (on == _on) return;
-  if (on) {
-    irsend.sendRaw(AC_ON_RAW_CODE, AC_ON_RAW_CODE_LEN, AC_RAW_FREQUENCY_KHZ);
-  } else {
-    irsend.sendRaw(AC_OFF_RAW_CODE, AC_OFF_RAW_CODE_LEN, AC_RAW_FREQUENCY_KHZ);
-  }
+  irsend.sendCOOLIX(on ? AC_ON_CODE : AC_OFF_CODE, AC_CODE_BITS);
   _on = on;
 }

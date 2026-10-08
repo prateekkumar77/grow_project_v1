@@ -1,11 +1,13 @@
 #pragma once
 
-// Drives the AC via IR, replaying raw codes captured from the real remote
-// (see ir_codes.h) rather than using a protocol-aware library - works with
-// any AC brand regardless of its actual IR protocol, at the cost of only
-// ever reproducing the exact on/off state that was captured (no
-// temperature/mode control), which matches decide_relay_state()'s own
-// binary ac output exactly.
+// Drives the AC via IR, replaying the exact ON/OFF codes captured from the
+// real remote (see ir_codes.h) - not full temperature/mode control, just
+// the two fixed states that were captured, matching decide_relay_state()'s
+// own binary ac output exactly. Sent via IRremoteESP8266's native COOLIX
+// protocol support (this deployment's AC) rather than raw timing replay,
+// since the capture tool recognized it; an AC whose protocol the capture
+// tool doesn't recognize would instead replay the raw array it still
+// prints alongside the decoded form - see ir_codes.h.
 class IrAcController {
  public:
   void begin();
