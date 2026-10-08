@@ -1,9 +1,10 @@
-// One-time utility, NOT part of the production firmware - this is the
-// `ir_capture` PlatformIO environment's only source file (see
-// platformio.ini), built and flashed separately from the main esp32dev
-// firmware. Reads raw IR codes off your actual AC remote for pasting into
-// firmware/include/ir_codes.h. See "Capturing your AC's IR codes" in
-// README.md for the full walkthrough.
+// One-time utility, NOT part of the production firmware - built only by
+// the `ir_capture` PlatformIO environment (see platformio.ini's
+// build_src_filter, which excludes this file from the main esp32dev
+// build and excludes everything else from this one), flashed separately
+// from the main firmware. Reads raw IR codes off your actual AC remote
+// for pasting into firmware/include/ir_codes.h. See "Capturing your AC's
+// IR codes" in README.md for the full walkthrough.
 //
 // Wire the IR module's IRin pin to kRecvPin below (matching this
 // project's IR_RECV_PIN wiring notes in config.h/README), build and flash

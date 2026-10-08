@@ -5,11 +5,11 @@
 // Raw IR timing codes captured from your actual AC remote - these are
 // PLACEHOLDERS (a short, meaningless blip) that will not control any real
 // air conditioner. See "Capturing your AC's IR codes" in README.md: build
-// and flash firmware/tools/ir_capture (a separate PlatformIO environment,
-// not part of the main firmware), point your real remote at the module's
-// IR receiver, press ON then OFF, and paste each captured array below in
-// place of the placeholder - keep the `_LEN` lines as-is, they compute
-// themselves from whatever array you paste in.
+// and flash the `ir_capture` PlatformIO environment (`pio run -e
+// ir_capture -t upload`, not the main firmware), point your real remote
+// at the module's IR receiver, press ON then OFF, and paste each captured
+// array below in place of the placeholder - keep the `_LEN` lines as-is,
+// they compute themselves from whatever array you paste in.
 //
 // Captured once per remote, not per AC setting: most AC remotes send a
 // complete state (power + temperature + mode + fan speed) on every button
