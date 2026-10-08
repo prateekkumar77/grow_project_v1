@@ -248,8 +248,17 @@ your own before relying on it:
      raw timing array it still prints alongside (a ready-to-paste
      `uint16_t rawData[...] = {...}` line) into `ir_codes.h` instead, and
      use `irsend.sendRaw(array, length, 38)` in `ir_ac.cpp`.
-5. Reflash the **main** firmware (`pio run -t upload`, the default
-   `esp32dev` environment) — the capture utility is never part of it.
+5. Optional sanity check before trusting the real firmware/dashboard with
+   it: flash the `ir_test` environment, which just replays the two codes
+   in `ir_codes.h` every 5 seconds — point the module's IRout LED at the
+   AC and confirm it switches on and off on its own:
+   ```bash
+   pio run -e ir_test -t upload
+   pio device monitor
+   ```
+6. Reflash the **main** firmware (`pio run -e esp32dev -t upload`, also
+   the default environment for a bare `pio run -t upload`) — neither the
+   capture utility nor the IR test sketch is ever part of it.
 
 ## API
 
