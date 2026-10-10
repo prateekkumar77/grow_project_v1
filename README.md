@@ -1,9 +1,10 @@
 # Grow tent automation system
 
 Automated environmental control for a home grow tent: an ESP32 reports
-sensor readings, a FastAPI backend decides what the relays should do, and
-a browser dashboard shows/controls it, with optional Home Assistant /
-Google Home integration for the AC. The dashboard is a single HTML file
+sensor readings, a FastAPI backend decides what the relays (and the AC,
+via IR) should do, and a browser dashboard shows/controls it, with
+optional Home Assistant integration for its own reachability badge. The
+dashboard is a single HTML file
 with no build step - no bundler, no npm install, just edit and reload -
 responsive down to a small phone, with a sticky status header and
 touch-sized controls throughout. It does load a handful of CDN libraries
@@ -58,10 +59,11 @@ Retune these from the dashboard's **profile** tab at any time — no
 restart needed, and the edit is saved to the database so it survives one.
 `backend/.env.example` (`HUMIDITY_HIGH_THRESHOLD` etc.) only sets the
 *first-run* default, before anyone has ever saved a profile; editing it
-after that has no effect on a running system. `GROW_PROFILE_NAME` and
-`TENT_SIZE_M2` live in the same profile and tab — separate, purely
-cosmetic fields for the dashboard header that don't feed the decision
-engine.
+after that has no effect on a running system. `GROW_PROFILE_NAME`,
+`TENT_SIZE_M2`, and `GROW_START_DATE` live in the same profile and tab —
+purely cosmetic fields that don't feed the decision engine. Setting a
+start date shows a "day N" counter in the dashboard header (day 1 = that
+date); leave it blank to omit the counter entirely.
 
 ## Light schedule
 
@@ -207,6 +209,57 @@ baud), dip the probe fully in water and note the printed raw value
 (`soil raw=<n> -> <pct>%`), do the same in dry air, then set both
 constants to what you actually measured and reflash.
 
+### Capturing your AC's IR codes
+
+The AC is driven by an IR transmitter (an Adafruit 38KHz IR Transceiver,
+wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14), replaying the
+exact ON/OFF codes captured from your actual remote. `firmware/include/
+ir_codes.h` ships with placeholder codes that control nothing; capture
+your own before relying on it:
+
+1. Wire the module's IRin pin to GPIO 32 (also VIN/GND as normal) —
+   needed for this one-time capture only.
+2. Build and flash the capture utility, a **separate** PlatformIO
+   environment from the main firmware:
+   ```bash
+   cd firmware
+   pio run -e ir_capture -t upload
+   pio device monitor
+   ```
+3. Point your real AC remote at the module and press the button for the
+   state you want captured — typically **ON** at whatever temperature/mode
+   you'll actually run it at, then **OFF**. Most AC remotes send a
+   complete state (power + temperature + mode + fan speed) on every press
+   rather than a simple toggle, so whatever was showing on the remote when
+   you pressed ON is what gets replayed every time the dashboard turns the
+   AC on — there's no separate temperature control.
+4. Each press prints to Serial. Two outcomes, depending on whether
+   IRremoteESP8266 recognizes your AC's protocol:
+   - **Protocol recognized** (prints e.g. `Protocol: COOLIX` and
+     `Code: 0xB23F70 (24 Bits)`) — the common case, and what this
+     project's own reference deployment got. Copy the `Code` hex value
+     into `AC_ON_CODE`/`AC_OFF_CODE` in `firmware/include/ir_codes.h`,
+     and call the matching `irsend.send<Protocol>(...)` method in
+     `firmware/src/ir_ac.cpp`'s `applyCommand()` (e.g. `sendCOOLIX(code,
+     bits)`) in place of whatever's there — check the exact method
+     signature in IRremoteESP8266's `IRsend.h` if the protocol differs
+     from COOLIX.
+   - **Protocol unrecognized** (prints `Protocol: UNKNOWN`) — paste the
+     raw timing array it still prints alongside (a ready-to-paste
+     `uint16_t rawData[...] = {...}` line) into `ir_codes.h` instead, and
+     use `irsend.sendRaw(array, length, 38)` in `ir_ac.cpp`.
+5. Optional sanity check before trusting the real firmware/dashboard with
+   it: flash the `ir_test` environment, which just replays the two codes
+   in `ir_codes.h` every 5 seconds — point the module's IRout LED at the
+   AC and confirm it switches on and off on its own:
+   ```bash
+   pio run -e ir_test -t upload
+   pio device monitor
+   ```
+6. Reflash the **main** firmware (`pio run -e esp32dev -t upload`, also
+   the default environment for a bare `pio run -t upload`) — neither the
+   capture utility nor the IR test sketch is ever part of it.
+
 ## API
 
 | Method & path | Caller | Purpose |
@@ -252,25 +305,59 @@ Basic Auth is stateless: no session, no timeout, no working "log out" —
 staying logged in is just the browser caching credentials for as long as
 it wants to.
 
-## Home Assistant / Google Home
+## AC control
 
-Fan, exhaust, pump, and light are physical ESP32 relays. **AC is the one
-exception** — a Google Home device (smart plug or native smart
-AC/mini-split) with no ESP32 relay, driven entirely through Home
-Assistant (`backend/ha_client.py`) as part of the decision engine's
-humidity/temperature escalation. Set `HA_AC_ENTITY` to the entity ID and
-`HA_AC_DOMAIN` to `switch` (smart plug) or `climate` (native smart AC).
+Fan, exhaust, pump, light, and now AC are all directly ESP32-driven — the
+first four via physical relays, AC via an IR transmitter replaying raw
+codes captured from the real remote (see "Capturing your AC's IR codes"
+above). AC is still part of the decision engine's humidity/temperature
+escalation exactly as before; only the actuation mechanism changed, from
+a push to Home Assistant to a command in the same telemetry response the
+ESP32 already polls for fan/pump/light.
 
-A Home Assistant outage never blocks `/api/telemetry` — failures are
-logged and ignored, and AC holds its last state until HA comes back. One
-consequence: the firmware's offline emergency-temperature floor can only
-drive a physical relay, so AC gets no such backstop while offline.
+IR is fire-and-forget like any IR remote — there's no confirmation
+channel, so `reported_relay_state.ac` is "what the ESP32 last told the AC
+to do," not a verified real state. The firmware only transmits on an
+actual on→off or off→on transition (never every telemetry cycle), since
+unlike a relay pin, re-sending the same IR code isn't a harmless no-op.
 
-There's no separate notification channel — no speaker/media device is
-connected, so crossing `ALERT_TEMP_C` forces fan and AC on directly
-instead of announcing anything.
+Crossing `ALERT_TEMP_C` forces fan and AC on directly, and (if configured)
+also fires a Telegram message — see the next section.
 
-The dashboard shows a live "is Home Assistant reachable" badge, checked
-on its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`,
-default 30s) — never inline with a request, so a slow/hanging HA can't
-add latency to a page load.
+## Telegram emergency-temperature alerts
+
+Optional. The moment `temp_c` first crosses `ALERT_TEMP_C`, the backend
+sends a Telegram message to your phone, then at most one more every
+`ALERT_NOTIFY_COOLDOWN_MINUTES` (default 15) for as long as it stays
+crossed — frequent enough that a sustained emergency isn't silent for
+hours, rare enough that it isn't a message every ~20s telemetry cycle.
+This is separate from the fan+AC override above, which still re-applies
+every cycle regardless of whether a message was sent or Telegram is even
+configured.
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, send
+   `/newbot`, and follow the prompts (any name/username). It replies with
+   a bot token like `123456789:AAH...` — that's `TELEGRAM_BOT_TOKEN`.
+2. Start a chat with your new bot (search its username, send it any
+   message — e.g. "hi") so it's allowed to message you back.
+3. Get your chat ID: message [@userinfobot](https://t.me/userinfobot) (or
+   any similar bot) and it replies with your numeric ID — that's
+   `TELEGRAM_CHAT_ID`.
+4. Set both in `.env` and restart the backend:
+   ```bash
+   TELEGRAM_BOT_TOKEN=123456789:AAH...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+5. Leaving either blank disables the notification entirely (logged as a
+   warning, not an error) — the fan+AC override still happens either way.
+
+## Home Assistant
+
+No longer used for AC (see above) — Home Assistant integration is now
+just a reachability badge on the dashboard (`backend/ha_client.py`),
+kept in case this project uses HA for something else later. Checked on
+its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default
+30s), never inline with a request, so a slow/hanging HA can't add latency
+to a page load. An HA outage has no effect on anything else — it never
+blocked `/api/telemetry` even when it did drive AC, and now has even
+less to do with the control loop.

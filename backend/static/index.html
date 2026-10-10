@@ -665,6 +665,7 @@
     padding: 8px 12px;
     border-radius: var(--radius-sm);
     width: 100%;
+    color-scheme: dark;
   }
 
   .profile-field input:focus { outline: 1px solid var(--border-strong); }
@@ -1013,9 +1014,9 @@
 
   <div class="panel">
     <div class="section-title">
-      <i data-lucide="house" width="14" height="14" stroke-width="1.8"></i>
-      home assistant
-      <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
+      <i data-lucide="snowflake" width="14" height="14" stroke-width="1.8"></i>
+      ac
+      <span class="meta" style="margin-left: auto; font-weight: 400;">IR, not a local relay</span>
     </div>
 
     <div class="control-row">
@@ -1023,8 +1024,17 @@
         <button class="control-btn ac" id="ac-btn">off</button>
         <div class="control-pending" id="ac-pending"><span class="blip"></span>pending&hellip;</div>
       </div>
-      <span class="meta">ac &middot; via Home Assistant, not a local relay &middot; also used for temperature alerts</span>
+      <span class="meta">driven by the ESP32's IR transmitter &middot; also used for temperature alerts</span>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <i data-lucide="house" width="14" height="14" stroke-width="1.8"></i>
+      home assistant
+      <span id="ha-badge" class="status-badge" data-state="unknown" style="margin-left: auto;"><span class="dot"></span><span class="text">checking&hellip;</span></span>
+    </div>
+    <span class="meta">reachability only &middot; no longer used for ac control</span>
   </div>
 
   <div class="panel">
@@ -1122,6 +1132,10 @@
         <label class="meta" for="profile-tent-size">tent size (m&sup2;)</label>
         <input type="text" id="profile-tent-size" maxlength="50" placeholder="e.g. 1.2x1.2">
       </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-start-date">grow start date</label>
+        <input type="date" id="profile-start-date">
+      </div>
     </div>
   </div>
 
@@ -1215,6 +1229,7 @@
   var PROFILE_FIELDS = {
     "profile-name": { api: "grow_profile_name", type: "string" },
     "profile-tent-size": { api: "tent_size_m2", type: "string" },
+    "profile-start-date": { api: "start_date", type: "string" },
     "profile-humidity-high": { api: "humidity_high_threshold", type: "number" },
     "profile-humidity-low": { api: "humidity_low_threshold", type: "number" },
     "profile-temp-fan": { api: "temp_fan_threshold_c", type: "number" },
@@ -1487,9 +1502,25 @@
       });
   }
 
+  // Day 1 = start_date itself, computed in UTC to match every other date
+  // in this dashboard (chart windows, todayUtcDateString(), etc.). A
+  // future start_date (grow hasn't begun yet) returns null rather than a
+  // negative/zero count.
+  function growDayNumber(startDateStr) {
+    if (!startDateStr) return null;
+    var start = new Date(startDateStr + "T00:00:00Z");
+    if (isNaN(start.getTime())) return null;
+    var now = new Date();
+    var todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    var daysSinceStart = Math.floor((todayUtc - start.getTime()) / 86400000);
+    return daysSinceStart >= 0 ? daysSinceStart + 1 : null;
+  }
+
   function applyProfileLabel(profile) {
     var label = profile.grow_profile_name || "Custom grow profile";
     if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
+    var dayNumber = growDayNumber(profile.start_date);
+    if (dayNumber != null) label += " · day " + dayNumber;
     document.getElementById("profile-label").textContent = label;
   }
 

@@ -56,26 +56,76 @@ was tried before landing here.
   restart safely defaults back to `auto` mode.
 - `ALERT_TEMP_C` (backend, default 32°C) forces fan+AC on directly as an
   early-warning response, independent of and lower than the firmware's
-  offline-only `EMERGENCY_TEMP_C` (default 35°C). No notification channel
-  exists — no speaker/media device is connected, so this is a direct
-  cooling response, not an alert.
-- AC has no physical relay — it's a Google Home device pushed via Home
-  Assistant (`ha_client.set_ac()`, `HA_AC_ENTITY`/`HA_AC_DOMAIN`),
-  backgrounded so a slow HA call never delays `/api/telemetry`'s response
-  to the ESP32. `/api/status` reports the last HA-confirmed state, since
-  the ESP32 has no relay pin for AC to report a real value. HA
-  reachability is polled on its own background schedule
-  (`HA_HEALTH_CHECK_INTERVAL_SECONDS`), never inline with a request.
+  offline-only `EMERGENCY_TEMP_C` (default 35°C).
+- Crossing `ALERT_TEMP_C` also fires a Telegram message (`telegram_client.py`),
+  separate from and rate-limited independently of the fan+AC override above
+  (which still re-applies every cycle regardless). `alerting.py`'s
+  `should_send_temp_alert()` is the pure decide-when logic, kept apart from
+  `telegram_client.py`'s actual HTTP call so it's unit-testable without
+  mocking the network or wall-clock time: fires once on first crossing, then
+  at most every `ALERT_NOTIFY_COOLDOWN_MINUTES` for as long as it stays
+  crossed — frequent enough that a sustained emergency isn't silent for
+  hours, rare enough that it isn't a message every ~20s telemetry cycle.
+  Sent via FastAPI `BackgroundTasks` so a slow/unreachable Telegram never
+  adds latency to the ESP32's telemetry POST; missing `TELEGRAM_BOT_TOKEN`/
+  `TELEGRAM_CHAT_ID` just skips the message (logged, not raised) — the
+  fan+AC response never depends on Telegram being configured.
+- **AC moved from Home Assistant to a direct ESP32 IR transmitter**
+  (`firmware/src/ir_ac.*`), replaying the exact ON/OFF codes captured from
+  the real remote rather than decoding/constructing full protocol state
+  (temperature/mode/fan) - whichever way the capture tool reads them off
+  the real remote, which matches `decide_relay_state()`'s own binary `ac`
+  output exactly (on/off only), so nothing was actually given up by not
+  building full state control. This deployment's AC turned out to use the
+  COOLIX protocol, which IRremoteESP8266 recognizes natively - the two
+  captured codes are sent via its `sendCOOLIX()` rather than raw timing
+  replay, simpler and more reliable than reproducing ~200 raw timing
+  values by hand. An AC whose protocol the capture tool doesn't recognize
+  falls back to `sendRaw()` with the raw array it still prints alongside
+  the decoded form either way - see `firmware/include/ir_codes.h`.
+  `commanded.ac` already traveled to the ESP32 inside the same
+  `relay_state` JSON fan/pump/light use (the field existed on `RelayState`
+  from the start; the firmware just ignored it) - no new wire format
+  needed, just a firmware that finally reads it. Home Assistant stays
+  wired in for its own reachability badge only
+  (`ha_client.check_connection()`), not removed outright, in case this
+  project uses HA for something else later - `ha_client.set_ac()` and the
+  `HA_AC_ENTITY`/`HA_AC_DOMAIN` env vars were removed as dead code once
+  nothing called them anymore.
+- IR is fire-and-forget, same limitation Home Assistant had: no
+  confirmation channel, so `reported_relay_state.ac` is "what we last
+  told it to do," not a verified real state. The firmware only
+  transmits on an actual on→off/off→on transition, never every
+  telemetry cycle - unlike a relay pin, re-sending the same IR code
+  isn't a harmless no-op (many AC remotes send a full state packet on
+  every press).
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 
 ## Grow profile editor
 
 - Every decision-engine threshold, plus `ALERT_TEMP_C` and the cosmetic
-  `GROW_PROFILE_NAME`/`TENT_SIZE_M2` fields, are one editable "grow
-  profile" (`GrowProfileIn`/`GrowProfileOut` in `models.py`), live-editable
-  from the dashboard's **profile** tab (admin-only, like every other
-  mutating route) - not a code or `.env` change.
+  `GROW_PROFILE_NAME`/`TENT_SIZE_M2`/`GROW_START_DATE` fields, are one
+  editable "grow profile" (`GrowProfileIn`/`GrowProfileOut` in
+  `models.py`), live-editable from the dashboard's **profile** tab
+  (admin-only, like every other mutating route) - not a code or `.env`
+  change.
+- `start_date` derives a "day N" counter (day 1 = that date) shown in the
+  dashboard header - computed client-side from the already-returned
+  profile rather than as a field `GET /api/profile` serves pre-computed,
+  since it only changes once a day and the frontend already has
+  everything it needs. A future `start_date` (grow hasn't started yet)
+  shows no counter rather than a negative/zero one.
+- **Adding `start_date` to an already-shipped `grow_profile` table needed
+  a one-time `ALTER TABLE ... ADD COLUMN`** (`_ensure_grow_profile_
+  start_date_column()` in `main.py`, run on every startup before the
+  table is used) - `SQLModel.metadata.create_all()` only creates missing
+  *tables*, never adds a column to one that already exists, so a database
+  with a profile saved before this field existed would otherwise fail
+  every profile load/save with "no such column: start_date". Checked via
+  `PRAGMA table_info` so it's a no-op both for a brand-new database
+  (`create_all()` above already created the table with every current
+  column) and for a database that's already been migrated once.
 - Firmware-only safety settings (`EMERGENCY_TEMP_C`, `SOIL_ADC_DRY`/`WET`,
   `MAX_PUMP_RUN_SECONDS`, `PUMP_COOLDOWN_SECONDS`) are deliberately **not**
   part of this profile - there is no runtime channel for the backend to
@@ -234,10 +284,11 @@ was tried before landing here.
   different problems, different signals.
 - Manual mode gets a persistent top banner plus a background wash across
   every panel, not just a toggle change, so it's visually unmistakable.
-- AC gets its own panel (not a relay tile), with a live HA-reachability
-  badge, since it depends on Home Assistant rather than a local relay —
-  its "on" accent is teal to stay visually distinct from every other
-  relay's green/amber.
+- AC keeps its own panel (not a relay tile, even though it's ESP32-driven
+  like one now) since it's IR, not a GPIO pin - its "on" accent stays teal
+  to flag that distinction, visually separate from every other relay's
+  green/amber. The Home Assistant reachability badge moved to its own
+  small panel once it stopped sharing a panel with AC control.
 - **Sticky header, not a fixed one.** `position: sticky` keeps mode/
   connection status visible while scrolling a long panel list on a phone,
   without the extra complexity a `fixed` header brings (content needing a

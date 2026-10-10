@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
@@ -13,8 +13,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
-import ha_client
+import telegram_client
 from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
+from alerting import should_send_temp_alert
 from chart_data import bucket_by_step
 from decision_engine import GrowProfile
 from decision_engine import Reading as DecisionReading
@@ -57,6 +58,10 @@ logger = logging.getLogger("main")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/grow.db")
 OFFLINE_THRESHOLD_SECONDS = float(os.getenv("OFFLINE_THRESHOLD_SECONDS", "90"))
 ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
+# How often, at most, a Telegram alert re-fires while temp_c stays at or
+# above ALERT_TEMP_C - the fan+AC override itself re-applies every cycle
+# regardless, only the notification is rate-limited.
+ALERT_NOTIFY_COOLDOWN_MINUTES = float(os.getenv("ALERT_NOTIFY_COOLDOWN_MINUTES", "15"))
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 
@@ -65,6 +70,9 @@ HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 # per grow without touching code.
 GROW_PROFILE_NAME = os.getenv("GROW_PROFILE_NAME", "Custom grow profile")
 TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
+# Optional - the dashboard derives a "day N" counter from this, but it's
+# otherwise as cosmetic as the two above. Blank by default; YYYY-MM-DD.
+GROW_START_DATE = os.getenv("GROW_START_DATE", "")
 
 # Light schedule defaults. Starts with the schedule OFF (light under
 # manual control, off) so a fresh deploy never starts cycling a light
@@ -103,6 +111,7 @@ def _default_grow_profile() -> GrowProfileOut:
         alert_temp_c=ALERT_TEMP_C,
         grow_profile_name=GROW_PROFILE_NAME,
         tent_size_m2=TENT_SIZE_M2 or None,
+        start_date=date.fromisoformat(GROW_START_DATE) if GROW_START_DATE else None,
     )
 
 
@@ -125,12 +134,9 @@ class AppState:
         # 0 unless the firmware is currently refusing a commanded pump-on
         # due to its own post-cap cooldown - see post_telemetry.
         self.pump_cooldown_remaining_s: float = 0.0
-        # The AC has no physical relay - it's controlled entirely through
-        # Home Assistant. This tracks the last state we successfully
-        # confirmed HA applied, so /api/status can report real AC state
-        # instead of the ESP32's meaningless "ac" field, and so we only
-        # call HA when the desired state actually changes.
-        self.last_ha_ac_state: Optional[bool] = None
+        # None until the first high-temperature Telegram alert ever fires -
+        # see should_send_temp_alert() for the cooldown this gates.
+        self.last_temp_alert_sent: Optional[datetime] = None
         # Light: independent of `mode` entirely. Either the schedule
         # decides (is_light_on, recomputed fresh every time - no stored
         # "next toggle" state) or, when the schedule is off, this manual
@@ -230,10 +236,27 @@ def get_session():
         yield session
 
 
+def _ensure_grow_profile_start_date_column() -> None:
+    """SQLModel.metadata.create_all() only creates missing tables - it never
+    adds a column to one that already exists. grow_profile shipped before
+    start_date existed, so an already-deployed database's table is missing
+    it; without this, loading or saving the profile there would fail with
+    "no such column: start_date". A fresh deploy's create_all() above
+    already creates the table with every current column, so this is a
+    no-op for it (PRAGMA table_info on a table that doesn't exist yet
+    returns nothing)."""
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(grow_profile)")}
+        if columns and "start_date" not in columns:
+            conn.exec_driver_sql("ALTER TABLE grow_profile ADD COLUMN start_date DATE")
+            conn.commit()
+
+
 @app.on_event("startup")
 def on_startup():
     os.makedirs(os.path.dirname(DATABASE_URL.replace("sqlite:///", "")) or ".", exist_ok=True)
     SQLModel.metadata.create_all(engine)
+    _ensure_grow_profile_start_date_column()
     # No row yet means no dashboard save has ever happened - leave
     # app_state.grow_profile at its .env-derived default rather than
     # writing one now; a DB row should only ever appear from an explicit
@@ -285,23 +308,6 @@ def _exhaust_status(now: datetime) -> ExhaustStatus:
         commanded=commanded,
         reported=app_state.exhaust_reported,
     )
-
-
-def _sync_ac_to_ha(ac_on: bool) -> None:
-    """Pushes the AC's desired state to Home Assistant - this is the only
-    path that actually controls it, since it has no ESP32 relay. Skips the
-    call if we already believe HA is in that state, and only marks it
-    confirmed on success, so a failed call gets retried on the next cycle
-    instead of silently getting stuck out of sync."""
-    with app_state.lock:
-        if app_state.last_ha_ac_state == ac_on:
-            return
-    try:
-        if ha_client.set_ac(ac_on):
-            with app_state.lock:
-                app_state.last_ha_ac_state = ac_on
-    except Exception:  # noqa: BLE001
-        logger.exception("AC sync to Home Assistant failed")
 
 
 @app.post("/api/telemetry", response_model=TelemetryOut)
@@ -358,14 +364,32 @@ def post_telemetry(
             }
         )
 
-        # No Home Assistant alert/switch here - no media/speaker device is
-        # connected. Instead, crossing ALERT_TEMP_C forces fan and AC on
-        # directly, overriding auto/manual mode, as an early-warning
-        # cooling response. Not one-way: once the reading drops back below
-        # the threshold, normal mode/decision-engine logic resumes control
-        # on the next cycle.
+        # Crossing ALERT_TEMP_C forces fan and AC on directly, overriding
+        # auto/manual mode, as an early-warning cooling response. Not
+        # one-way: once the reading drops back below the threshold, normal
+        # mode/decision-engine logic resumes control on the next cycle.
         if reading.temp_c >= app_state.grow_profile.alert_temp_c:
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
+
+            # Telegram notification, separate from (and rate-limited
+            # independently of) the fan+AC override above, which re-applies
+            # every cycle regardless. should_send_temp_alert() fires once on
+            # first crossing the threshold, then at most every
+            # ALERT_NOTIFY_COOLDOWN_MINUTES while it stays crossed.
+            if should_send_temp_alert(
+                reading.temp_c,
+                app_state.grow_profile.alert_temp_c,
+                app_state.last_temp_alert_sent,
+                now,
+                ALERT_NOTIFY_COOLDOWN_MINUTES,
+            ):
+                app_state.last_temp_alert_sent = now
+                message = (
+                    f"Grow tent emergency: {reading.temp_c:.1f}C "
+                    f"(threshold {app_state.grow_profile.alert_temp_c:.1f}C). Fan and AC forced on."
+                )
+                background_tasks.add_task(telegram_client.send_message, message)
+                app_state.activity_log.record(f"temperature alert sent: {reading.temp_c:.1f}C", AUTO_ACTOR)
 
         app_state.commanded_relay_state = commanded
         app_state.relay_activity.update(commanded, AUTO_ACTOR)
@@ -385,11 +409,6 @@ def post_telemetry(
         session.add(row)
         session.commit()
 
-    # Backgrounded so a slow/unreachable Home Assistant never delays the
-    # response the ESP32 is waiting on (it has its own ~5s HTTP timeout,
-    # the same order of magnitude as HA_REQUEST_TIMEOUT_SECONDS).
-    background_tasks.add_task(_sync_ac_to_ha, commanded.ac)
-
     return TelemetryOut(mode=mode, relay_state=commanded)
 
 
@@ -401,13 +420,7 @@ def get_status():
             app_state.last_seen is None
             or (now - app_state.last_seen).total_seconds() > OFFLINE_THRESHOLD_SECONDS
         )
-        # The ESP32 has no "ac" relay pin at all (unlike fan/exhaust/pump) -
-        # its reported value is meaningless, so report our own
-        # last-confirmed Home Assistant state for ac instead - that's the
-        # only place the real AC state actually lives.
         reported = app_state.reported_relay_state
-        if reported is not None and app_state.last_ha_ac_state is not None:
-            reported = reported.model_copy(update={"ac": app_state.last_ha_ac_state})
 
         # Commanded light/exhaust state is recomputed fresh here (not read
         # from commanded_relay_state, which only updates on the ESP32's
@@ -617,26 +630,22 @@ def set_mode(payload: ModeIn, request: Request):
 
 
 @app.post("/api/relay")
-def set_relay(payload: RelayIn, background_tasks: BackgroundTasks, request: Request):
+def set_relay(payload: RelayIn, request: Request):
     with app_state.lock:
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
         app_state.relay_activity.update(app_state.commanded_relay_state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
-        result = {
+        # ac picks this up the same way fan/pump do - on the ESP32's next
+        # telemetry poll (~20s) - now that it's IR-driven by the ESP32
+        # itself rather than needing an immediate separate push to Home
+        # Assistant (which had no poll cycle of its own to piggyback on).
+        return {
             "relay": payload.relay,
             "state": payload.state,
             "commanded_relay_state": app_state.commanded_relay_state.model_dump(),
         }
-
-    if payload.relay == "ac":
-        # Unlike fan/pump, the ESP32 never picks this up on its own poll -
-        # there's no relay for it to poll. Push it now rather than waiting
-        # for the next telemetry cycle to (indirectly) trigger the sync.
-        background_tasks.add_task(_sync_ac_to_ha, payload.state)
-
-    return result
 
 
 @app.post("/api/light/schedule", response_model=LightStatus)

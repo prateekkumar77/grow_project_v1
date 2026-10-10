@@ -1,5 +1,5 @@
 """SQLModel tables and shared pydantic schemas used across the backend."""
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
@@ -13,12 +13,14 @@ class RelayState(BaseModel):
     # its own run/interval duty-cycle schedule (or manual control when
     # that schedule is off). See ExhaustStatus below.
     exhaust: bool = False
-    # AC has no physical ESP32 relay - it's a Google Home device driven
-    # entirely through Home Assistant (see ha_client.set_ac()). Unlike
-    # exhaust, it IS part of decide_relay_state()'s humidity/temperature
-    # escalation. The ESP32 never reports a real value for this field (no
-    # pin to read), so `reported_relay_state.ac` is overridden with the
-    # last Home-Assistant-confirmed state instead.
+    # Driven by the ESP32 via an IR transmitter (see firmware/src/ir_ac.*),
+    # not a physical relay - replaying raw codes captured from the real AC
+    # remote, so it's fire-and-forget like every other commanded value: the
+    # ESP32 reports back what it last told the AC to do, not a confirmed
+    # real state (IR has no feedback channel). Unlike exhaust, it IS part
+    # of decide_relay_state()'s humidity/temperature escalation. No longer
+    # related to Home Assistant, which stays wired in for its own
+    # reachability badge only.
     ac: bool = False
     pump: bool = False
     # Grow light. Has its own ESP32 relay like fan/pump, but is never
@@ -115,6 +117,10 @@ class GrowProfileIn(BaseModel):
     alert_temp_c: float = PydanticField(ge=-10, le=60)
     grow_profile_name: str = PydanticField(min_length=1, max_length=100)
     tent_size_m2: Optional[str] = PydanticField(default=None, max_length=50)
+    # Purely cosmetic, like grow_profile_name/tent_size_m2 - the dashboard
+    # derives a "day N" counter from it, but it's never read by the
+    # decision engine.
+    start_date: Optional[date] = None
 
     @model_validator(mode="after")
     def _thresholds_make_sense(self) -> "GrowProfileIn":
@@ -226,3 +232,4 @@ class GrowProfileRow(SQLModel, table=True):
     alert_temp_c: float
     grow_profile_name: str
     tent_size_m2: Optional[str] = None
+    start_date: Optional[date] = None
