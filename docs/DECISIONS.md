@@ -56,9 +56,20 @@ was tried before landing here.
   restart safely defaults back to `auto` mode.
 - `ALERT_TEMP_C` (backend, default 32°C) forces fan+AC on directly as an
   early-warning response, independent of and lower than the firmware's
-  offline-only `EMERGENCY_TEMP_C` (default 35°C). No notification channel
-  exists — no speaker/media device is connected, so this is a direct
-  cooling response, not an alert.
+  offline-only `EMERGENCY_TEMP_C` (default 35°C).
+- Crossing `ALERT_TEMP_C` also fires a Telegram message (`telegram_client.py`),
+  separate from and rate-limited independently of the fan+AC override above
+  (which still re-applies every cycle regardless). `alerting.py`'s
+  `should_send_temp_alert()` is the pure decide-when logic, kept apart from
+  `telegram_client.py`'s actual HTTP call so it's unit-testable without
+  mocking the network or wall-clock time: fires once on first crossing, then
+  at most every `ALERT_NOTIFY_COOLDOWN_MINUTES` for as long as it stays
+  crossed — frequent enough that a sustained emergency isn't silent for
+  hours, rare enough that it isn't a message every ~20s telemetry cycle.
+  Sent via FastAPI `BackgroundTasks` so a slow/unreachable Telegram never
+  adds latency to the ESP32's telemetry POST; missing `TELEGRAM_BOT_TOKEN`/
+  `TELEGRAM_CHAT_ID` just skips the message (logged, not raised) — the
+  fan+AC response never depends on Telegram being configured.
 - **AC moved from Home Assistant to a direct ESP32 IR transmitter**
   (`firmware/src/ir_ac.*`), replaying the exact ON/OFF codes captured from
   the real remote rather than decoding/constructing full protocol state

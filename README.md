@@ -321,9 +321,35 @@ to do," not a verified real state. The firmware only transmits on an
 actual on→off or off→on transition (never every telemetry cycle), since
 unlike a relay pin, re-sending the same IR code isn't a harmless no-op.
 
-There's no separate notification channel — no speaker/media device is
-connected, so crossing `ALERT_TEMP_C` forces fan and AC on directly
-instead of announcing anything.
+Crossing `ALERT_TEMP_C` forces fan and AC on directly, and (if configured)
+also fires a Telegram message — see the next section.
+
+## Telegram emergency-temperature alerts
+
+Optional. The moment `temp_c` first crosses `ALERT_TEMP_C`, the backend
+sends a Telegram message to your phone, then at most one more every
+`ALERT_NOTIFY_COOLDOWN_MINUTES` (default 15) for as long as it stays
+crossed — frequent enough that a sustained emergency isn't silent for
+hours, rare enough that it isn't a message every ~20s telemetry cycle.
+This is separate from the fan+AC override above, which still re-applies
+every cycle regardless of whether a message was sent or Telegram is even
+configured.
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, send
+   `/newbot`, and follow the prompts (any name/username). It replies with
+   a bot token like `123456789:AAH...` — that's `TELEGRAM_BOT_TOKEN`.
+2. Start a chat with your new bot (search its username, send it any
+   message — e.g. "hi") so it's allowed to message you back.
+3. Get your chat ID: message [@userinfobot](https://t.me/userinfobot) (or
+   any similar bot) and it replies with your numeric ID — that's
+   `TELEGRAM_CHAT_ID`.
+4. Set both in `.env` and restart the backend:
+   ```bash
+   TELEGRAM_BOT_TOKEN=123456789:AAH...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+5. Leaving either blank disables the notification entirely (logged as a
+   warning, not an error) — the fan+AC override still happens either way.
 
 ## Home Assistant
 

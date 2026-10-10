@@ -7,13 +7,15 @@ import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
+import telegram_client
 from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
+from alerting import should_send_temp_alert
 from chart_data import bucket_by_step
 from decision_engine import GrowProfile
 from decision_engine import Reading as DecisionReading
@@ -56,6 +58,10 @@ logger = logging.getLogger("main")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/grow.db")
 OFFLINE_THRESHOLD_SECONDS = float(os.getenv("OFFLINE_THRESHOLD_SECONDS", "90"))
 ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
+# How often, at most, a Telegram alert re-fires while temp_c stays at or
+# above ALERT_TEMP_C - the fan+AC override itself re-applies every cycle
+# regardless, only the notification is rate-limited.
+ALERT_NOTIFY_COOLDOWN_MINUTES = float(os.getenv("ALERT_NOTIFY_COOLDOWN_MINUTES", "15"))
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 
@@ -128,6 +134,9 @@ class AppState:
         # 0 unless the firmware is currently refusing a commanded pump-on
         # due to its own post-cap cooldown - see post_telemetry.
         self.pump_cooldown_remaining_s: float = 0.0
+        # None until the first high-temperature Telegram alert ever fires -
+        # see should_send_temp_alert() for the cooldown this gates.
+        self.last_temp_alert_sent: Optional[datetime] = None
         # Light: independent of `mode` entirely. Either the schedule
         # decides (is_light_on, recomputed fresh every time - no stored
         # "next toggle" state) or, when the schedule is off, this manual
@@ -302,7 +311,9 @@ def _exhaust_status(now: datetime) -> ExhaustStatus:
 
 
 @app.post("/api/telemetry", response_model=TelemetryOut)
-def post_telemetry(payload: TelemetryIn, session: Session = Depends(get_session)):
+def post_telemetry(
+    payload: TelemetryIn, background_tasks: BackgroundTasks, session: Session = Depends(get_session)
+):
     now = datetime.utcnow()
     reading = SensorReading(
         temp_c=payload.temp_c, humidity=payload.humidity, soil_moisture=payload.soil_moisture
@@ -353,14 +364,32 @@ def post_telemetry(payload: TelemetryIn, session: Session = Depends(get_session)
             }
         )
 
-        # No Home Assistant alert/switch here - no media/speaker device is
-        # connected. Instead, crossing ALERT_TEMP_C forces fan and AC on
-        # directly, overriding auto/manual mode, as an early-warning
-        # cooling response. Not one-way: once the reading drops back below
-        # the threshold, normal mode/decision-engine logic resumes control
-        # on the next cycle.
+        # Crossing ALERT_TEMP_C forces fan and AC on directly, overriding
+        # auto/manual mode, as an early-warning cooling response. Not
+        # one-way: once the reading drops back below the threshold, normal
+        # mode/decision-engine logic resumes control on the next cycle.
         if reading.temp_c >= app_state.grow_profile.alert_temp_c:
             commanded = commanded.model_copy(update={"fan": True, "ac": True})
+
+            # Telegram notification, separate from (and rate-limited
+            # independently of) the fan+AC override above, which re-applies
+            # every cycle regardless. should_send_temp_alert() fires once on
+            # first crossing the threshold, then at most every
+            # ALERT_NOTIFY_COOLDOWN_MINUTES while it stays crossed.
+            if should_send_temp_alert(
+                reading.temp_c,
+                app_state.grow_profile.alert_temp_c,
+                app_state.last_temp_alert_sent,
+                now,
+                ALERT_NOTIFY_COOLDOWN_MINUTES,
+            ):
+                app_state.last_temp_alert_sent = now
+                message = (
+                    f"Grow tent emergency: {reading.temp_c:.1f}C "
+                    f"(threshold {app_state.grow_profile.alert_temp_c:.1f}C). Fan and AC forced on."
+                )
+                background_tasks.add_task(telegram_client.send_message, message)
+                app_state.activity_log.record(f"temperature alert sent: {reading.temp_c:.1f}C", AUTO_ACTOR)
 
         app_state.commanded_relay_state = commanded
         app_state.relay_activity.update(commanded, AUTO_ACTOR)
