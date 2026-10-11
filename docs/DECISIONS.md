@@ -136,6 +136,17 @@ was tried before landing here.
   three - no all-or-nothing reading. `models.HaPowerStatus` is the
   pydantic response shape; `ha_client.PowerReading` is the plain internal
   dataclass `AppState` actually holds, same split as `decision_engine.Reading`.
+- Every live readout card (temp/humidity/soil/current/voltage/power) shows
+  a small today's-min/max badge in its corner, tracked **entirely
+  client-side** (`localStorage`, keyed `grow-minmax-<metric>`) - the
+  backend has no concept of this and never computes or stores it.
+  Resets at the UTC day boundary (`todayUtcDateString()`, the same "today"
+  convention the day chart/grow-day counter already use), so a stored
+  value from a previous day is treated as absent rather than shown stale.
+  Survives a page reload (that's the point of `localStorage` over an
+  in-memory object) but is per-browser/per-device, not synced across
+  anyone else viewing the dashboard - two people watching the same tent
+  from two browsers see two independent histories.
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 
