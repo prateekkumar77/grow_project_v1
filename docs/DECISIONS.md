@@ -70,6 +70,29 @@ was tried before landing here.
   adds latency to the ESP32's telemetry POST; missing `TELEGRAM_BOT_TOKEN`/
   `TELEGRAM_CHAT_ID` just skips the message (logged, not raised) — the
   fan+AC response never depends on Telegram being configured.
+- `GrowProfile.telegram_alert_mode` ("main"/"all", editable from the
+  dashboard's Profile tab like every other profile field) is a second,
+  independent Telegram channel on top of the emergency alert above. "main"
+  (the default) is today's behavior, unchanged. "all" also fires a message
+  for every `ActivityLog` entry (relay transitions, mode/schedule changes,
+  profile saves, exports, auto-revert, ...) — uncapped, no cooldown, since
+  `RelayActivityTracker` already only logs actual on/off transitions, not
+  every ~20s telemetry cycle, so "all" doesn't spam on its own. Wired into
+  `ActivityLog.on_record` (`main.py`'s `_on_activity_recorded`, extending
+  the same hook that already persists every entry to the DB) rather than
+  `BackgroundTasks`, since `on_record` fires from contexts with no
+  `Request`/`BackgroundTasks` at all (e.g. `scheduler.py`'s
+  `_check_auto_revert` job) — a plain daemon `threading.Thread` sends
+  instead, working from any call site. Skips the one entry
+  (`"temperature alert sent: ..."`) the emergency path above already sends
+  its own, more detailed message for, so "all" mode never double-sends for
+  the same crossing. `alerting.py`'s `should_notify_all_alerts()` is the
+  pure decide-whether-to-notify logic (mode check + the dedup exclusion),
+  same unit-testable-without-mocking pattern as `should_send_temp_alert()`.
+  `telegram_alert_mode` lives on `GrowProfileIn`/`Out`/`Row` rather than a
+  new `AppState` field or endpoint — it's a grow-profile field like
+  `alert_temp_c`, so it reuses that entire existing
+  persistence/edit/save/migration machinery for free.
 - **AC moved from Home Assistant to a direct ESP32 IR transmitter**
   (`firmware/src/ir_ac.*`), replaying the exact ON/OFF codes captured from
   the real remote rather than decoding/constructing full protocol state

@@ -14,8 +14,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
 import telegram_client
-from activity_log import AUTO_ACTOR, ActivityLog, RelayActivityTracker
-from alerting import should_send_temp_alert
+from activity_log import AUTO_ACTOR, ActivityEntry, ActivityLog, RelayActivityTracker
+from alerting import should_notify_all_alerts, should_send_temp_alert
 from chart_data import bucket_by_step
 from decision_engine import GrowProfile
 from decision_engine import Reading as DecisionReading
@@ -62,6 +62,9 @@ ALERT_TEMP_C = float(os.getenv("ALERT_TEMP_C", "32.0"))
 # above ALERT_TEMP_C - the fan+AC override itself re-applies every cycle
 # regardless, only the notification is rate-limited.
 ALERT_NOTIFY_COOLDOWN_MINUTES = float(os.getenv("ALERT_NOTIFY_COOLDOWN_MINUTES", "15"))
+# First-run default for the grow profile's telegram_alert_mode field - see
+# GrowProfileIn.telegram_alert_mode in models.py for what "main"/"all" mean.
+TELEGRAM_ALERT_MODE = os.getenv("TELEGRAM_ALERT_MODE", "main")
 HISTORY_DEFAULT_LIMIT = int(os.getenv("HISTORY_DEFAULT_LIMIT", "100"))
 HISTORY_MAX_LIMIT = int(os.getenv("HISTORY_MAX_LIMIT", "1000"))
 
@@ -109,6 +112,7 @@ def _default_grow_profile() -> GrowProfileOut:
         soil_moisture_low_threshold=thresholds.soil_moisture_low_threshold,
         soil_moisture_hysteresis=thresholds.soil_moisture_hysteresis,
         alert_temp_c=ALERT_TEMP_C,
+        telegram_alert_mode=TELEGRAM_ALERT_MODE,
         grow_profile_name=GROW_PROFILE_NAME,
         tent_size_m2=TENT_SIZE_M2 or None,
         start_date=date.fromisoformat(GROW_START_DATE) if GROW_START_DATE else None,
@@ -186,8 +190,29 @@ def _persist_activity_entry(entry) -> None:
         logger.exception("Failed to persist activity log entry")
 
 
+def _notify_telegram_all(entry: ActivityEntry) -> None:
+    """Fires a Telegram message for this entry when the saved grow profile's
+    telegram_alert_mode is "all" (see should_notify_all_alerts()). Runs in a
+    plain daemon thread rather than FastAPI BackgroundTasks - on_record
+    fires from many contexts, including a plain APScheduler job
+    (_check_auto_revert in scheduler.py) with no Request/BackgroundTasks
+    available at all, not just request handlers."""
+    if not should_notify_all_alerts(app_state.grow_profile.telegram_alert_mode, entry.message):
+        return
+    threading.Thread(
+        target=telegram_client.send_message,
+        args=(f"{entry.actor}: {entry.message}",),
+        daemon=True,
+    ).start()
+
+
+def _on_activity_recorded(entry: ActivityEntry) -> None:
+    _persist_activity_entry(entry)
+    _notify_telegram_all(entry)
+
+
 app_state = AppState()
-app_state.activity_log.on_record = _persist_activity_entry
+app_state.activity_log.on_record = _on_activity_recorded
 app = FastAPI(title="Grow Tent Controller")
 
 # Paths the ESP32 firmware itself calls - it sends no Authorization header
@@ -236,19 +261,19 @@ def get_session():
         yield session
 
 
-def _ensure_grow_profile_start_date_column() -> None:
+def _ensure_grow_profile_column(column: str, ddl_type: str) -> None:
     """SQLModel.metadata.create_all() only creates missing tables - it never
     adds a column to one that already exists. grow_profile shipped before
-    start_date existed, so an already-deployed database's table is missing
-    it; without this, loading or saving the profile there would fail with
-    "no such column: start_date". A fresh deploy's create_all() above
-    already creates the table with every current column, so this is a
-    no-op for it (PRAGMA table_info on a table that doesn't exist yet
-    returns nothing)."""
+    start_date/telegram_alert_mode existed, so an already-deployed
+    database's table is missing whichever of these came later; without
+    this, loading or saving the profile there would fail with "no such
+    column: ...". A fresh deploy's create_all() above already creates the
+    table with every current column, so this is a no-op for it (PRAGMA
+    table_info on a table that doesn't exist yet returns nothing)."""
     with engine.connect() as conn:
         columns = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(grow_profile)")}
-        if columns and "start_date" not in columns:
-            conn.exec_driver_sql("ALTER TABLE grow_profile ADD COLUMN start_date DATE")
+        if columns and column not in columns:
+            conn.exec_driver_sql(f"ALTER TABLE grow_profile ADD COLUMN {column} {ddl_type}")
             conn.commit()
 
 
@@ -256,7 +281,13 @@ def _ensure_grow_profile_start_date_column() -> None:
 def on_startup():
     os.makedirs(os.path.dirname(DATABASE_URL.replace("sqlite:///", "")) or ".", exist_ok=True)
     SQLModel.metadata.create_all(engine)
-    _ensure_grow_profile_start_date_column()
+    _ensure_grow_profile_column("start_date", "DATE")
+    # DEFAULT 'main' (unlike start_date's plain DATE, with no DEFAULT) -
+    # telegram_alert_mode is a required Literal["main", "all"] field, not
+    # Optional, so an existing row backfilled with NULL would fail
+    # GrowProfileOut validation on the very next startup; start_date can
+    # take a bare NULL because it's Optional.
+    _ensure_grow_profile_column("telegram_alert_mode", "TEXT DEFAULT 'main'")
     # No row yet means no dashboard save has ever happened - leave
     # app_state.grow_profile at its .env-derived default rather than
     # writing one now; a DB row should only ever appear from an explicit

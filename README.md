@@ -351,6 +351,27 @@ configured.
 5. Leaving either blank disables the notification entirely (logged as a
    warning, not an error) — the fan+AC override still happens either way.
 
+### Alert mode: main alerts vs all alerts
+
+A segmented toggle in the dashboard's **Profile** tab ("telegram alerts"
+panel) switches between two notification modes, saved with the rest of the
+grow profile:
+
+- **main alerts** (default) — exactly the above: only the
+  emergency-temperature alert, rate-limited by
+  `ALERT_NOTIFY_COOLDOWN_MINUTES`.
+- **all alerts** — also sends a Telegram message for every entry that lands
+  in the dashboard's activity feed: relay toggles (manual or auto-mode),
+  mode switches, light/exhaust schedule changes, profile saves, exports.
+  Uncapped — no cooldown — since relay entries already only log an actual
+  on/off *transition*, not every ~20s telemetry cycle, so this doesn't spam
+  on its own. The emergency-temperature alert itself isn't duplicated here;
+  it keeps sending its own single, more detailed message either way.
+
+Takes effect immediately on save, same as every other profile field — no
+restart needed. `TELEGRAM_ALERT_MODE` in `.env` sets the first-run default
+before anyone has saved a profile from the dashboard.
+
 ## Home Assistant
 
 No longer used for AC (see above) — Home Assistant integration is now

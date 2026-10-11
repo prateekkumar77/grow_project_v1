@@ -432,6 +432,15 @@
     border-color: var(--moss);
   }
 
+  /* alert-mode-toggle: main | all - thumb shifts right for all (2nd
+     button); reuses --warn, same as mode-toggle's manual, since "all
+     alerts" is the more aggressive of the two settings */
+  #alert-mode-toggle[data-mode="all"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(224, 164, 88, 0.55), rgba(224, 164, 88, 0.3));
+    border-color: var(--warn);
+  }
+
   .segmented button {
     position: relative;
     z-index: 1;
@@ -1200,6 +1209,23 @@
 
   <div class="panel">
     <div class="section-title">
+      <i data-lucide="send" width="14" height="14" stroke-width="1.8"></i>
+      telegram alerts
+    </div>
+    <div class="row">
+      <div class="segmented" id="alert-mode-toggle" data-mode="main">
+        <span class="segmented-thumb"></span>
+        <button id="alert-mode-btn-main" class="active">main alerts</button>
+        <button id="alert-mode-btn-all">all alerts</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="meta">main: only the emergency temperature alert above, rate-limited. all: also a message for every action taken (relay toggles, mode/schedule changes, profile saves, exports, ...), uncapped.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
       <i data-lucide="save" width="14" height="14" stroke-width="1.8"></i>
       save
     </div>
@@ -1238,6 +1264,7 @@
     "profile-soil-low": { api: "soil_moisture_low_threshold", type: "number" },
     "profile-soil-hysteresis": { api: "soil_moisture_hysteresis", type: "number" },
     "profile-alert-temp": { api: "alert_temp_c", type: "number" },
+    "alert-mode-toggle": { api: "telegram_alert_mode", type: "segmented" },
   };
 
   function fmt(n) {
@@ -1526,8 +1553,19 @@
 
   function populateProfileForm(profile) {
     Object.keys(PROFILE_FIELDS).forEach(function (id) {
-      var value = profile[PROFILE_FIELDS[id].api];
-      document.getElementById(id).value = value === null || value === undefined ? "" : value;
+      var field = PROFILE_FIELDS[id];
+      var value = profile[field.api];
+      if (field.type === "segmented") {
+        // Hardcoded button ids rather than derived from `id` - there's
+        // only this one segmented profile field, same pragmatic one-off
+        // approach as its own click handlers below.
+        var mode = value || "main";
+        document.getElementById(id).dataset.mode = mode;
+        document.getElementById("alert-mode-btn-main").classList.toggle("active", mode === "main");
+        document.getElementById("alert-mode-btn-all").classList.toggle("active", mode === "all");
+      } else {
+        document.getElementById(id).value = value === null || value === undefined ? "" : value;
+      }
     });
   }
 
@@ -2052,6 +2090,18 @@
       });
   });
 
+  document.getElementById("alert-mode-btn-main").addEventListener("click", function () {
+    document.getElementById("alert-mode-toggle").dataset.mode = "main";
+    document.getElementById("alert-mode-btn-main").classList.add("active");
+    document.getElementById("alert-mode-btn-all").classList.remove("active");
+  });
+
+  document.getElementById("alert-mode-btn-all").addEventListener("click", function () {
+    document.getElementById("alert-mode-toggle").dataset.mode = "all";
+    document.getElementById("alert-mode-btn-all").classList.add("active");
+    document.getElementById("alert-mode-btn-main").classList.remove("active");
+  });
+
   document.getElementById("profile-save-btn").addEventListener("click", function () {
     var btn = document.getElementById("profile-save-btn");
     var pending = document.getElementById("profile-pending");
@@ -2059,6 +2109,10 @@
     var payload = {};
     Object.keys(PROFILE_FIELDS).forEach(function (id) {
       var field = PROFILE_FIELDS[id];
+      if (field.type === "segmented") {
+        payload[field.api] = document.getElementById(id).dataset.mode;
+        return;
+      }
       var raw = document.getElementById(id).value;
       payload[field.api] = field.type === "number" ? parseFloat(raw) : (raw.trim() === "" ? null : raw.trim());
     });
