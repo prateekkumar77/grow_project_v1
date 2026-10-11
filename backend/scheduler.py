@@ -16,6 +16,9 @@ AUTO_REVERT_MINUTES = float(os.getenv("AUTO_REVERT_MINUTES", "30"))
 EXPORT_INTERVAL_MINUTES = float(os.getenv("EXPORT_INTERVAL_MINUTES", "60"))
 AUTO_REVERT_CHECK_INTERVAL_SECONDS = float(os.getenv("AUTO_REVERT_CHECK_INTERVAL_SECONDS", "60"))
 HA_HEALTH_CHECK_INTERVAL_SECONDS = float(os.getenv("HA_HEALTH_CHECK_INTERVAL_SECONDS", "30"))
+# Faster than the connectivity check above - this is meant to feel "live"
+# next to the dashboard's own 5s poll, not just a periodic health signal.
+HA_POWER_POLL_INTERVAL_SECONDS = float(os.getenv("HA_POWER_POLL_INTERVAL_SECONDS", "10"))
 
 
 def _check_auto_revert(app_state):
@@ -48,6 +51,16 @@ def _check_ha_connection(app_state):
         app_state.ha_last_checked = datetime.utcnow()
 
 
+def _check_ha_power(app_state):
+    # Same "own schedule, never per-request" reasoning as
+    # _check_ha_connection above - fetch_power_reading() makes up to three
+    # HTTP calls, never something /api/status should block on.
+    reading = ha_client.fetch_power_reading()
+    with app_state.lock:
+        app_state.ha_power = reading
+        app_state.ha_power_checked_at = datetime.utcnow()
+
+
 def start_scheduler(app_state, engine) -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
@@ -70,6 +83,14 @@ def start_scheduler(app_state, engine) -> BackgroundScheduler:
         seconds=HA_HEALTH_CHECK_INTERVAL_SECONDS,
         args=[app_state],
         id="ha_connection_check",
+        next_run_time=datetime.now(),  # check immediately at startup, not after the first interval
+    )
+    scheduler.add_job(
+        _check_ha_power,
+        "interval",
+        seconds=HA_POWER_POLL_INTERVAL_SECONDS,
+        args=[app_state],
+        id="ha_power_poll",
         next_run_time=datetime.now(),  # check immediately at startup, not after the first interval
     )
     scheduler.start()

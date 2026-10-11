@@ -374,11 +374,35 @@ before anyone has saved a profile from the dashboard.
 
 ## Home Assistant
 
-No longer used for AC (see above) — Home Assistant integration is now
-just a reachability badge on the dashboard (`backend/ha_client.py`),
-kept in case this project uses HA for something else later. Checked on
-its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default
-30s), never inline with a request, so a slow/hanging HA can't add latency
-to a page load. An HA outage has no effect on anything else — it never
-blocked `/api/telemetry` even when it did drive AC, and now has even
-less to do with the control loop.
+No longer used for AC (see above) — Home Assistant integration is now a
+reachability badge plus, optionally, a live power/current/voltage readout
+(`backend/ha_client.py`). Checked on its own background schedule
+(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s), never inline with a
+request, so a slow/hanging HA can't add latency to a page load. An HA
+outage has no effect on anything else — it never blocked
+`/api/telemetry` even when it did drive AC, and now has even less to do
+with the control loop.
+
+### Live power row (optional)
+
+If HA monitors a smart plug or similar device (current/voltage/power
+sensors), the dashboard can show those live on the **live** tab, right
+below temperature/humidity/soil moisture — handy for watching how much
+the fan/pump/AC are actually drawing.
+
+1. In Home Assistant, find the exact entity IDs: **Settings → Devices &
+   Services → Entities**, search for your device, note the IDs (e.g.
+   `sensor.16amp_smart_plug_current`).
+2. Set them in `.env`:
+   ```bash
+   HA_CURRENT_ENTITY=sensor.16amp_smart_plug_current
+   HA_VOLTAGE_ENTITY=sensor.16amp_smart_plug_voltage
+   HA_POWER_ENTITY=sensor.16amp_smart_plug_power
+   ```
+3. Restart the backend. Each value is fetched independently
+   (`HA_POWER_POLL_INTERVAL_SECONDS`, default 10s) — leaving one entity
+   blank, or one going temporarily unavailable, only blanks that one
+   value ("--" on the dashboard), not the other two.
+
+Leaving all three blank (the default) just means the row always shows
+"--" — no error, nothing else is affected.

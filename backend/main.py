@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import auth
+import ha_client
 import telegram_client
 from activity_log import AUTO_ACTOR, ActivityEntry, ActivityLog, RelayActivityTracker
 from alerting import should_notify_all_alerts, should_send_temp_alert
@@ -37,6 +38,7 @@ from models import (
     GrowProfileIn,
     GrowProfileOut,
     GrowProfileRow,
+    HaPowerStatus,
     HaStatus,
     LightManualIn,
     LightScheduleIn,
@@ -163,6 +165,12 @@ class AppState:
         # until the first check completes.
         self.ha_reachable: Optional[bool] = None
         self.ha_last_checked: Optional[datetime] = None
+        # Smart-plug current/voltage/power, refreshed on its own schedule
+        # (see scheduler._check_ha_power) - same "never block a request"
+        # reasoning as ha_reachable above. All-None default until the
+        # first poll completes or if the HA_*_ENTITY env vars are unset.
+        self.ha_power: ha_client.PowerReading = ha_client.PowerReading()
+        self.ha_power_checked_at: Optional[datetime] = None
         # Last 20 notable actions, for the dashboard's activity feed.
         self.activity_log = ActivityLog()
         # Tracks each relay's last-logged value so only actual on/off
@@ -474,6 +482,12 @@ def get_status():
             light=_light_status(now),
             exhaust=_exhaust_status(now),
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
+            ha_power=HaPowerStatus(
+                current_a=app_state.ha_power.current_a,
+                voltage_v=app_state.ha_power.voltage_v,
+                power_w=app_state.ha_power.power_w,
+                checked_at=app_state.ha_power_checked_at,
+            ),
             activity=[
                 ActivityEntryOut(timestamp=e.timestamp, message=e.message, actor=e.actor)
                 for e in app_state.activity_log.recent()

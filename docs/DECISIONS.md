@@ -122,6 +122,20 @@ was tried before landing here.
   telemetry cycle - unlike a relay pin, re-sending the same IR code
   isn't a harmless no-op (many AC remotes send a full state packet on
   every press).
+- **Optional live power/current/voltage row**, sourced from an
+  HA-monitored smart plug's three sensor entities
+  (`ha_client.fetch_power_reading()`). Same shape as
+  `check_connection()`: polled on its own background job
+  (`scheduler._check_ha_power`, default 10s - faster than the 30s
+  connectivity check, since this is meant to feel "live" next to the
+  dashboard's own 5s poll) and cached in `AppState`, never fetched inline
+  from `GET /api/status`. Each of the three entities
+  (`HA_CURRENT_ENTITY`/`HA_VOLTAGE_ENTITY`/`HA_POWER_ENTITY`) is fetched
+  independently, so one unconfigured (blank env var), renamed, or
+  temporarily-unavailable entity only blanks that one value, not all
+  three - no all-or-nothing reading. `models.HaPowerStatus` is the
+  pydantic response shape; `ha_client.PowerReading` is the plain internal
+  dataclass `AppState` actually holds, same split as `decision_engine.Reading`.
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 

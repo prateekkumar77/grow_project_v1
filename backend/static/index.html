@@ -923,6 +923,26 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div class="grid-3">
+      <div class="readout" data-metric="current">
+        <div class="icon"><i data-lucide="activity" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">current</div>
+        <div><span class="value" id="val-current">&ndash;&ndash;</span><span class="unit">a</span></div>
+      </div>
+      <div class="readout" data-metric="voltage">
+        <div class="icon"><i data-lucide="zap" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">voltage</div>
+        <div><span class="value" id="val-voltage">&ndash;&ndash;</span><span class="unit">v</span></div>
+      </div>
+      <div class="readout" data-metric="power">
+        <div class="icon"><i data-lucide="gauge" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">power</div>
+        <div><span class="value" id="val-power">&ndash;&ndash;</span><span class="unit">w</span></div>
+      </div>
+    </div>
+  </div>
+
   <div class="two-col">
     <div class="panel">
       <div class="section-title">
@@ -1251,7 +1271,7 @@
   var currentLightScheduleEnabled = false;
   var currentExhaustScheduleEnabled = false;
   var currentUserRole = null;
-  var lastValues = { temp: null, humidity: null, soil: null };
+  var lastValues = { temp: null, humidity: null, soil: null, current: null, voltage: null, power: null };
   var PROFILE_FIELDS = {
     "profile-name": { api: "grow_profile_name", type: "string" },
     "profile-tent-size": { api: "tent_size_m2", type: "string" },
@@ -1339,6 +1359,9 @@
     setValue("temp", "val-temp", status.latest_reading ? status.latest_reading.temp_c : null);
     setValue("humidity", "val-humidity", status.latest_reading ? status.latest_reading.humidity : null);
     setValue("soil", "val-soil", status.latest_reading ? status.latest_reading.soil_moisture : null);
+    setValue("current", "val-current", status.ha_power ? status.ha_power.current_a : null);
+    setValue("voltage", "val-voltage", status.ha_power ? status.ha_power.voltage_v : null);
+    setValue("power", "val-power", status.ha_power ? status.ha_power.power_w : null);
 
     document.getElementById("last-seen").textContent = "last seen: " + (status.last_seen ? new Date(status.last_seen + "Z").toLocaleTimeString() : "never");
 

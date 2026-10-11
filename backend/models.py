@@ -154,6 +154,20 @@ class HaStatus(BaseModel):
     checked_at: Optional[datetime] = None
 
 
+class HaPowerStatus(BaseModel):
+    """A smart plug's live electrical readings, polled from three separate
+    HA entities (see ha_client.fetch_power_reading()) on their own
+    schedule, same "never block a request on HA" reasoning as HaStatus
+    above. Each field is independently None when its entity isn't
+    configured (blank HA_*_ENTITY env var) or the fetch failed - not an
+    all-or-nothing reading."""
+
+    current_a: Optional[float] = None
+    voltage_v: Optional[float] = None
+    power_w: Optional[float] = None
+    checked_at: Optional[datetime] = None
+
+
 class ActivityEntryOut(BaseModel):
     timestamp: datetime
     message: str
@@ -172,6 +186,7 @@ class StatusOut(BaseModel):
     light: LightStatus
     exhaust: ExhaustStatus
     ha: HaStatus
+    ha_power: HaPowerStatus
     # Newest first, capped at activity_log.MAX_ENTRIES - piggybacks on the
     # same 5s status poll rather than its own endpoint, same as everything
     # else the dashboard shows.
