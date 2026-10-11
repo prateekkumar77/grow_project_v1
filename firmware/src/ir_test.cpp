@@ -29,7 +29,7 @@ void setup() {
 void loop() {
   on = !on;
   ac.setMode(kCoolixCool);
-  ac.setFan(kCoolixFanAuto);
+  ac.setFan(kCoolixFanMax);
   ac.setTemp(AC_TARGET_TEMP_C);
   ac.setPower(on);
   ac.send();

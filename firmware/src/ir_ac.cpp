@@ -17,7 +17,7 @@ void IrAcController::applyCommand(bool on) {
   // a previous call (or its freshly-constructed default, on the very
   // first call).
   ac.setMode(kCoolixCool);
-  ac.setFan(kCoolixFanAuto);
+  ac.setFan(kCoolixFanMax);
   ac.setTemp(AC_TARGET_TEMP_C);
   ac.setPower(on);
   ac.send();
