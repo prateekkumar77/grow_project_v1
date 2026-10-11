@@ -33,9 +33,17 @@
 #define RELAY_ACTIVE_LOW true  // most cheap relay boards trigger LOW = energized
 
 // AC - not a relay, an IR transmitter (Adafruit 38KHz IR Transceiver,
-// product 5990) replaying raw codes captured from the real AC remote. See
-// ir_codes.h and "Capturing your AC's IR codes" in README.md.
+// product 5990), driven via IRremoteESP8266's structured COOLIX protocol
+// state (see ir_ac.cpp) rather than a captured raw code. See "Capturing
+// your AC's IR codes" in README.md for how COOLIX was identified as this
+// deployment's protocol in the first place.
 #define IR_SEND_PIN 14
+
+// Target temperature the AC is commanded to when turned on - a firmware
+// constant (not baked into a captured IR code), via IRremoteESP8266's
+// structured COOLIX state API. Change this and reflash to retarget - no
+// physical remote needed.
+#define AC_TARGET_TEMP_C 20
 
 // ---------------------------------------------------------------------------
 // Soil moisture calibration

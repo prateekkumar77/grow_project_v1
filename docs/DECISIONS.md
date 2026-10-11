@@ -94,18 +94,22 @@ was tried before landing here.
   `alert_temp_c`, so it reuses that entire existing
   persistence/edit/save/migration machinery for free.
 - **AC moved from Home Assistant to a direct ESP32 IR transmitter**
-  (`firmware/src/ir_ac.*`), replaying the exact ON/OFF codes captured from
-  the real remote rather than decoding/constructing full protocol state
-  (temperature/mode/fan) - whichever way the capture tool reads them off
-  the real remote, which matches `decide_relay_state()`'s own binary `ac`
-  output exactly (on/off only), so nothing was actually given up by not
-  building full state control. This deployment's AC turned out to use the
-  COOLIX protocol, which IRremoteESP8266 recognizes natively - the two
-  captured codes are sent via its `sendCOOLIX()` rather than raw timing
-  replay, simpler and more reliable than reproducing ~200 raw timing
-  values by hand. An AC whose protocol the capture tool doesn't recognize
-  falls back to `sendRaw()` with the raw array it still prints alongside
-  the decoded form either way - see `firmware/include/ir_codes.h`.
+  (`firmware/src/ir_ac.*`), matching `decide_relay_state()`'s own binary
+  `ac` output exactly (on/off only) - there's no per-request temperature
+  control, every "on" targets one fixed temperature/mode/fan. This
+  deployment's AC turned out to use the COOLIX protocol, which
+  IRremoteESP8266 supports natively via a structured state class
+  (`IRCoolixAC` in `ir_Coolix.h`) rather than just raw timing replay -
+  `ir_ac.cpp` calls `setMode()`/`setFan()`/`setTemp()`/`setPower()` and
+  `send()` on every transition, so the target temperature
+  (`AC_TARGET_TEMP_C` in `config.h`) is a firmware constant, changeable
+  by reflashing alone, never requiring the physical remote again (unlike
+  an earlier version of this feature, which replayed two codes captured
+  verbatim from the remote - recapturing was the only way to change
+  anything about the ON state, including temperature). An AC whose
+  protocol the capture tool doesn't recognize has no structured class to
+  use and falls back to `sendRaw()` with the raw timing array the tool
+  still prints alongside the decoded form either way.
   `commanded.ac` already traveled to the ESP32 inside the same
   `relay_state` JSON fan/pump/light use (the field existed on `RelayState`
   from the start; the firmware just ignored it) - no new wire format

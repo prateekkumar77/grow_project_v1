@@ -1,13 +1,12 @@
 #pragma once
 
-// Drives the AC via IR, replaying the exact ON/OFF codes captured from the
-// real remote (see ir_codes.h) - not full temperature/mode control, just
-// the two fixed states that were captured, matching decide_relay_state()'s
-// own binary ac output exactly. Sent via IRremoteESP8266's native COOLIX
-// protocol support (this deployment's AC) rather than raw timing replay,
-// since the capture tool recognized it; an AC whose protocol the capture
-// tool doesn't recognize would instead replay the raw array it still
-// prints alongside the decoded form - see ir_codes.h.
+// Drives the AC via IR using IRremoteESP8266's structured COOLIX protocol
+// state (IRCoolixAC, see ir_ac.cpp) - not a captured raw code replay. The
+// target temperature (AC_TARGET_TEMP_C in config.h) is a firmware
+// constant, changeable without ever touching the physical remote again.
+// Still just a binary on/off like decide_relay_state()'s own `ac` output -
+// every "on" command targets the same fixed temperature/mode/fan, there's
+// no per-request temperature control.
 class IrAcController {
  public:
   void begin();
