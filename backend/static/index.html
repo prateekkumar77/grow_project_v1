@@ -339,6 +339,20 @@
     margin-left: 2px;
   }
 
+  /* Min/max badge: tracked entirely client-side (localStorage), never
+     sent to or computed by the backend - see minMaxValues/updateMinMax()
+     below. Top-right corner has clearance from the centered icon. */
+  .readout .minmax {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.4;
+    color: var(--text-faint);
+    text-align: right;
+  }
+
   .row {
     display: flex;
     justify-content: space-between;
@@ -430,6 +444,15 @@
     transform: translateX(100%);
     background: linear-gradient(135deg, rgba(147, 172, 92, 0.55), rgba(147, 172, 92, 0.3));
     border-color: var(--moss);
+  }
+
+  /* alert-mode-toggle: main | all - thumb shifts right for all (2nd
+     button); reuses --warn, same as mode-toggle's manual, since "all
+     alerts" is the more aggressive of the two settings */
+  #alert-mode-toggle[data-mode="all"] .segmented-thumb {
+    transform: translateX(100%);
+    background: linear-gradient(135deg, rgba(224, 164, 88, 0.55), rgba(224, 164, 88, 0.3));
+    border-color: var(--warn);
   }
 
   .segmented button {
@@ -897,19 +920,45 @@
   <div class="panel">
     <div class="grid-3">
       <div class="readout" data-metric="temp">
+        <div class="minmax" id="minmax-temp" title="today's min / max on this device">&ndash;&ndash;</div>
         <div class="icon"><i data-lucide="thermometer" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">temperature</div>
         <div><span class="value" id="val-temp">&ndash;&ndash;</span><span class="unit">&deg;c</span></div>
       </div>
       <div class="readout" data-metric="humidity">
+        <div class="minmax" id="minmax-humidity" title="today's min / max on this device">&ndash;&ndash;</div>
         <div class="icon"><i data-lucide="droplet" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">humidity</div>
         <div><span class="value" id="val-humidity">&ndash;&ndash;</span><span class="unit">%</span></div>
       </div>
       <div class="readout" data-metric="soil">
+        <div class="minmax" id="minmax-soil" title="today's min / max on this device">&ndash;&ndash;</div>
         <div class="icon"><i data-lucide="sprout" width="20" height="20" stroke-width="1.6"></i></div>
         <div class="label">soil moisture</div>
         <div><span class="value" id="val-soil">&ndash;&ndash;</span><span class="unit">%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="grid-3">
+      <div class="readout" data-metric="current">
+        <div class="minmax" id="minmax-current" title="today's min / max on this device">&ndash;&ndash;</div>
+        <div class="icon"><i data-lucide="activity" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">current</div>
+        <div><span class="value" id="val-current">&ndash;&ndash;</span><span class="unit">a</span></div>
+      </div>
+      <div class="readout" data-metric="voltage">
+        <div class="minmax" id="minmax-voltage" title="today's min / max on this device">&ndash;&ndash;</div>
+        <div class="icon"><i data-lucide="zap" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">voltage</div>
+        <div><span class="value" id="val-voltage">&ndash;&ndash;</span><span class="unit">v</span></div>
+      </div>
+      <div class="readout" data-metric="power">
+        <div class="minmax" id="minmax-power" title="today's min / max on this device">&ndash;&ndash;</div>
+        <div class="icon"><i data-lucide="gauge" width="20" height="20" stroke-width="1.6"></i></div>
+        <div class="label">power</div>
+        <div><span class="value" id="val-power">&ndash;&ndash;</span><span class="unit">w</span></div>
       </div>
     </div>
   </div>
@@ -1200,6 +1249,23 @@
 
   <div class="panel">
     <div class="section-title">
+      <i data-lucide="send" width="14" height="14" stroke-width="1.8"></i>
+      telegram alerts
+    </div>
+    <div class="row">
+      <div class="segmented" id="alert-mode-toggle" data-mode="main">
+        <span class="segmented-thumb"></span>
+        <button id="alert-mode-btn-main" class="active">main alerts</button>
+        <button id="alert-mode-btn-all">all alerts</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="meta">main: only the emergency temperature alert above, rate-limited. all: also a message for every action taken (relay toggles, mode/schedule changes, profile saves, exports, ...), uncapped.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
       <i data-lucide="save" width="14" height="14" stroke-width="1.8"></i>
       save
     </div>
@@ -1225,7 +1291,59 @@
   var currentLightScheduleEnabled = false;
   var currentExhaustScheduleEnabled = false;
   var currentUserRole = null;
-  var lastValues = { temp: null, humidity: null, soil: null };
+  var lastValues = { temp: null, humidity: null, soil: null, current: null, voltage: null, power: null };
+
+  // Per-metric today's min/max, tracked entirely in this browser
+  // (localStorage) - never sent to or computed by the backend. Resets
+  // at the UTC day boundary, same convention the rest of the dashboard
+  // (day chart, grow-day counter) already uses for "today".
+  var MINMAX_KEYS = ["temp", "humidity", "soil", "current", "voltage", "power"];
+  var MINMAX_STORAGE_PREFIX = "grow-minmax-";
+  var minMaxValues = {};
+
+  function loadMinMax(key) {
+    try {
+      var raw = localStorage.getItem(MINMAX_STORAGE_PREFIX + key);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return (parsed && parsed.date === todayUtcDateString()) ? parsed : null;
+    } catch (e) {
+      // Private window, blocked storage, etc. - track in memory for this
+      // page load only, same as a normal numeric readout would anyway.
+      return null;
+    }
+  }
+
+  function renderMinMax(key) {
+    var el = document.getElementById("minmax-" + key);
+    if (!el) return;
+    var mm = minMaxValues[key];
+    el.innerHTML = mm ? ("&#9650;" + fmt(mm.max) + "<br>&#9660;" + fmt(mm.min)) : "&ndash;&ndash;";
+  }
+
+  function updateMinMax(key, n) {
+    if (typeof n !== "number") return;
+    var mm = minMaxValues[key];
+    if (!mm) {
+      mm = { date: todayUtcDateString(), min: n, max: n };
+    } else {
+      if (n < mm.min) mm.min = n;
+      if (n > mm.max) mm.max = n;
+    }
+    minMaxValues[key] = mm;
+    renderMinMax(key);
+    try {
+      localStorage.setItem(MINMAX_STORAGE_PREFIX + key, JSON.stringify(mm));
+    } catch (e) {
+      // Unavailable storage - still shown for this page load, just won't
+      // survive a reload.
+    }
+  }
+
+  MINMAX_KEYS.forEach(function (key) {
+    minMaxValues[key] = loadMinMax(key);
+    renderMinMax(key);
+  });
+
   var PROFILE_FIELDS = {
     "profile-name": { api: "grow_profile_name", type: "string" },
     "profile-tent-size": { api: "tent_size_m2", type: "string" },
@@ -1238,6 +1356,7 @@
     "profile-soil-low": { api: "soil_moisture_low_threshold", type: "number" },
     "profile-soil-hysteresis": { api: "soil_moisture_hysteresis", type: "number" },
     "profile-alert-temp": { api: "alert_temp_c", type: "number" },
+    "alert-mode-toggle": { api: "telegram_alert_mode", type: "segmented" },
   };
 
   function fmt(n) {
@@ -1256,6 +1375,11 @@
       }
       lastValues[key] = n;
     }
+  }
+
+  function applyMetric(key, elId, n) {
+    setValue(key, elId, n);
+    updateMinMax(key, n);
   }
 
   function setBadge(elId, state, text) {
@@ -1309,9 +1433,12 @@
   }
 
   function applyStatus(status) {
-    setValue("temp", "val-temp", status.latest_reading ? status.latest_reading.temp_c : null);
-    setValue("humidity", "val-humidity", status.latest_reading ? status.latest_reading.humidity : null);
-    setValue("soil", "val-soil", status.latest_reading ? status.latest_reading.soil_moisture : null);
+    applyMetric("temp", "val-temp", status.latest_reading ? status.latest_reading.temp_c : null);
+    applyMetric("humidity", "val-humidity", status.latest_reading ? status.latest_reading.humidity : null);
+    applyMetric("soil", "val-soil", status.latest_reading ? status.latest_reading.soil_moisture : null);
+    applyMetric("current", "val-current", status.ha_power ? status.ha_power.current_a : null);
+    applyMetric("voltage", "val-voltage", status.ha_power ? status.ha_power.voltage_v : null);
+    applyMetric("power", "val-power", status.ha_power ? status.ha_power.power_w : null);
 
     document.getElementById("last-seen").textContent = "last seen: " + (status.last_seen ? new Date(status.last_seen + "Z").toLocaleTimeString() : "never");
 
@@ -1526,8 +1653,19 @@
 
   function populateProfileForm(profile) {
     Object.keys(PROFILE_FIELDS).forEach(function (id) {
-      var value = profile[PROFILE_FIELDS[id].api];
-      document.getElementById(id).value = value === null || value === undefined ? "" : value;
+      var field = PROFILE_FIELDS[id];
+      var value = profile[field.api];
+      if (field.type === "segmented") {
+        // Hardcoded button ids rather than derived from `id` - there's
+        // only this one segmented profile field, same pragmatic one-off
+        // approach as its own click handlers below.
+        var mode = value || "main";
+        document.getElementById(id).dataset.mode = mode;
+        document.getElementById("alert-mode-btn-main").classList.toggle("active", mode === "main");
+        document.getElementById("alert-mode-btn-all").classList.toggle("active", mode === "all");
+      } else {
+        document.getElementById(id).value = value === null || value === undefined ? "" : value;
+      }
     });
   }
 
@@ -2052,6 +2190,18 @@
       });
   });
 
+  document.getElementById("alert-mode-btn-main").addEventListener("click", function () {
+    document.getElementById("alert-mode-toggle").dataset.mode = "main";
+    document.getElementById("alert-mode-btn-main").classList.add("active");
+    document.getElementById("alert-mode-btn-all").classList.remove("active");
+  });
+
+  document.getElementById("alert-mode-btn-all").addEventListener("click", function () {
+    document.getElementById("alert-mode-toggle").dataset.mode = "all";
+    document.getElementById("alert-mode-btn-all").classList.add("active");
+    document.getElementById("alert-mode-btn-main").classList.remove("active");
+  });
+
   document.getElementById("profile-save-btn").addEventListener("click", function () {
     var btn = document.getElementById("profile-save-btn");
     var pending = document.getElementById("profile-pending");
@@ -2059,6 +2209,10 @@
     var payload = {};
     Object.keys(PROFILE_FIELDS).forEach(function (id) {
       var field = PROFILE_FIELDS[id];
+      if (field.type === "segmented") {
+        payload[field.api] = document.getElementById(id).dataset.mode;
+        return;
+      }
       var raw = document.getElementById(id).value;
       payload[field.api] = field.type === "number" ? parseFloat(raw) : (raw.trim() === "" ? null : raw.trim());
     });

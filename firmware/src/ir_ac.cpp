@@ -1,18 +1,25 @@
 #include "ir_ac.h"
 
-#include <IRsend.h>
+#include <ir_Coolix.h>
 
 #include "config.h"
-#include "ir_codes.h"
 
-static IRsend irsend(IR_SEND_PIN);
+static IRCoolixAC ac(IR_SEND_PIN);
 
 void IrAcController::begin() {
-  irsend.begin();
+  ac.begin();
 }
 
 void IrAcController::applyCommand(bool on) {
   if (on == _on) return;
-  irsend.sendCOOLIX(on ? AC_ON_CODE : AC_OFF_CODE, AC_CODE_BITS);
+  // Set a fully-known state on every call, not just when turning on -
+  // avoids depending on whatever the object's state happened to be from
+  // a previous call (or its freshly-constructed default, on the very
+  // first call).
+  ac.setMode(kCoolixCool);
+  ac.setFan(kCoolixFanMax);
+  ac.setTemp(AC_TARGET_TEMP_C);
+  ac.setPower(on);
+  ac.send();
   _on = on;
 }

@@ -209,13 +209,15 @@ baud), dip the probe fully in water and note the printed raw value
 (`soil raw=<n> -> <pct>%`), do the same in dry air, then set both
 constants to what you actually measured and reflash.
 
-### Capturing your AC's IR codes
+### Capturing your AC's IR codes (identifying its protocol)
 
 The AC is driven by an IR transmitter (an Adafruit 38KHz IR Transceiver,
-wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14), replaying the
-exact ON/OFF codes captured from your actual remote. `firmware/include/
-ir_codes.h` ships with placeholder codes that control nothing; capture
-your own before relying on it:
+wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14). This
+deployment's AC uses the COOLIX protocol, which IRremoteESP8266 supports
+natively via a structured state class (`IRCoolixAC` in
+`firmware/src/ir_ac.cpp`) — not a captured raw code. The capture utility
+below is how COOLIX was identified in the first place, and is only needed
+again for a different AC or if you ever need to confirm your protocol:
 
 1. Wire the module's IRin pin to GPIO 32 (also VIN/GND as normal) —
    needed for this one-time capture only.
@@ -226,32 +228,33 @@ your own before relying on it:
    pio run -e ir_capture -t upload
    pio device monitor
    ```
-3. Point your real AC remote at the module and press the button for the
-   state you want captured — typically **ON** at whatever temperature/mode
-   you'll actually run it at, then **OFF**. Most AC remotes send a
-   complete state (power + temperature + mode + fan speed) on every press
-   rather than a simple toggle, so whatever was showing on the remote when
-   you pressed ON is what gets replayed every time the dashboard turns the
-   AC on — there's no separate temperature control.
+3. Point your real AC remote at the module and press a button — any
+   button is enough just to identify the protocol.
 4. Each press prints to Serial. Two outcomes, depending on whether
    IRremoteESP8266 recognizes your AC's protocol:
-   - **Protocol recognized** (prints e.g. `Protocol: COOLIX` and
-     `Code: 0xB23F70 (24 Bits)`) — the common case, and what this
-     project's own reference deployment got. Copy the `Code` hex value
-     into `AC_ON_CODE`/`AC_OFF_CODE` in `firmware/include/ir_codes.h`,
-     and call the matching `irsend.send<Protocol>(...)` method in
-     `firmware/src/ir_ac.cpp`'s `applyCommand()` (e.g. `sendCOOLIX(code,
-     bits)`) in place of whatever's there — check the exact method
-     signature in IRremoteESP8266's `IRsend.h` if the protocol differs
-     from COOLIX.
+   - **Protocol recognized** (prints e.g. `Protocol: COOLIX`) — the
+     common case, and what this project's own reference deployment got.
+     IRremoteESP8266 almost certainly has a structured state class for
+     it (`ir_<Protocol>.h`, e.g. `ir_Coolix.h` → `IRCoolixAC`) with
+     `setTemp()`/`setMode()`/`setFan()`/`setPower()` methods — use that
+     in `ir_ac.cpp`'s `applyCommand()`, the way this project's own
+     `IrAcController` already does for COOLIX. `AC_TARGET_TEMP_C` in
+     `config.h` is the firmware constant that sets the target
+     temperature — change it and reflash to retarget, no physical
+     remote needed.
    - **Protocol unrecognized** (prints `Protocol: UNKNOWN`) — paste the
-     raw timing array it still prints alongside (a ready-to-paste
-     `uint16_t rawData[...] = {...}` line) into `ir_codes.h` instead, and
-     use `irsend.sendRaw(array, length, 38)` in `ir_ac.cpp`.
+     raw timing array it still prints (a ready-to-paste
+     `uint16_t rawData[...] = {...}` line) into a new header, and use
+     `irsend.sendRaw(array, length, 38)` with a plain `IRsend` in
+     `ir_ac.cpp` instead — this is the one case where you're stuck
+     replaying a captured snapshot rather than setting state
+     programmatically, since there's no structured class for an unknown
+     protocol.
 5. Optional sanity check before trusting the real firmware/dashboard with
-   it: flash the `ir_test` environment, which just replays the two codes
-   in `ir_codes.h` every 5 seconds — point the module's IRout LED at the
-   AC and confirm it switches on and off on its own:
+   it: flash the `ir_test` environment, which sends the AC's COOLIX
+   ON/OFF state every 5 seconds the same way the real firmware does —
+   point the module's IRout LED at the AC and confirm it switches on and
+   off on its own:
    ```bash
    pio run -e ir_test -t upload
    pio device monitor
@@ -351,13 +354,58 @@ configured.
 5. Leaving either blank disables the notification entirely (logged as a
    warning, not an error) — the fan+AC override still happens either way.
 
+### Alert mode: main alerts vs all alerts
+
+A segmented toggle in the dashboard's **Profile** tab ("telegram alerts"
+panel) switches between two notification modes, saved with the rest of the
+grow profile:
+
+- **main alerts** (default) — exactly the above: only the
+  emergency-temperature alert, rate-limited by
+  `ALERT_NOTIFY_COOLDOWN_MINUTES`.
+- **all alerts** — also sends a Telegram message for every entry that lands
+  in the dashboard's activity feed: relay toggles (manual or auto-mode),
+  mode switches, light/exhaust schedule changes, profile saves, exports.
+  Uncapped — no cooldown — since relay entries already only log an actual
+  on/off *transition*, not every ~20s telemetry cycle, so this doesn't spam
+  on its own. The emergency-temperature alert itself isn't duplicated here;
+  it keeps sending its own single, more detailed message either way.
+
+Takes effect immediately on save, same as every other profile field — no
+restart needed. `TELEGRAM_ALERT_MODE` in `.env` sets the first-run default
+before anyone has saved a profile from the dashboard.
+
 ## Home Assistant
 
-No longer used for AC (see above) — Home Assistant integration is now
-just a reachability badge on the dashboard (`backend/ha_client.py`),
-kept in case this project uses HA for something else later. Checked on
-its own background schedule (`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default
-30s), never inline with a request, so a slow/hanging HA can't add latency
-to a page load. An HA outage has no effect on anything else — it never
-blocked `/api/telemetry` even when it did drive AC, and now has even
-less to do with the control loop.
+No longer used for AC (see above) — Home Assistant integration is now a
+reachability badge plus, optionally, a live power/current/voltage readout
+(`backend/ha_client.py`). Checked on its own background schedule
+(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s), never inline with a
+request, so a slow/hanging HA can't add latency to a page load. An HA
+outage has no effect on anything else — it never blocked
+`/api/telemetry` even when it did drive AC, and now has even less to do
+with the control loop.
+
+### Live power row (optional)
+
+If HA monitors a smart plug or similar device (current/voltage/power
+sensors), the dashboard can show those live on the **live** tab, right
+below temperature/humidity/soil moisture — handy for watching how much
+the fan/pump/AC are actually drawing.
+
+1. In Home Assistant, find the exact entity IDs: **Settings → Devices &
+   Services → Entities**, search for your device, note the IDs (e.g.
+   `sensor.16amp_smart_plug_current`).
+2. Set them in `.env`:
+   ```bash
+   HA_CURRENT_ENTITY=sensor.16amp_smart_plug_current
+   HA_VOLTAGE_ENTITY=sensor.16amp_smart_plug_voltage
+   HA_POWER_ENTITY=sensor.16amp_smart_plug_power
+   ```
+3. Restart the backend. Each value is fetched independently
+   (`HA_POWER_POLL_INTERVAL_SECONDS`, default 10s) — leaving one entity
+   blank, or one going temporarily unavailable, only blanks that one
+   value ("--" on the dashboard), not the other two.
+
+Leaving all three blank (the default) just means the row always shows
+"--" — no error, nothing else is affected.

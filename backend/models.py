@@ -115,6 +115,14 @@ class GrowProfileIn(BaseModel):
     soil_moisture_low_threshold: float = PydanticField(ge=0, le=100)
     soil_moisture_hysteresis: float = PydanticField(gt=0, le=50)
     alert_temp_c: float = PydanticField(ge=-10, le=60)
+    # "main" (default): only the emergency-temperature Telegram alert, rate
+    # limited by ALERT_NOTIFY_COOLDOWN_MINUTES, unchanged from before this
+    # field existed - the default keeps old saved profiles/payloads valid,
+    # same reasoning as TelemetryIn.pump_cooldown_remaining_s's default.
+    # "all": also sends a Telegram message for every activity-log entry
+    # (relay toggles, mode/schedule changes, profile saves, exports, ...),
+    # uncapped - see main.py's activity_log.on_record wiring.
+    telegram_alert_mode: Literal["main", "all"] = "main"
     grow_profile_name: str = PydanticField(min_length=1, max_length=100)
     tent_size_m2: Optional[str] = PydanticField(default=None, max_length=50)
     # Purely cosmetic, like grow_profile_name/tent_size_m2 - the dashboard
@@ -146,6 +154,20 @@ class HaStatus(BaseModel):
     checked_at: Optional[datetime] = None
 
 
+class HaPowerStatus(BaseModel):
+    """A smart plug's live electrical readings, polled from three separate
+    HA entities (see ha_client.fetch_power_reading()) on their own
+    schedule, same "never block a request on HA" reasoning as HaStatus
+    above. Each field is independently None when its entity isn't
+    configured (blank HA_*_ENTITY env var) or the fetch failed - not an
+    all-or-nothing reading."""
+
+    current_a: Optional[float] = None
+    voltage_v: Optional[float] = None
+    power_w: Optional[float] = None
+    checked_at: Optional[datetime] = None
+
+
 class ActivityEntryOut(BaseModel):
     timestamp: datetime
     message: str
@@ -164,6 +186,7 @@ class StatusOut(BaseModel):
     light: LightStatus
     exhaust: ExhaustStatus
     ha: HaStatus
+    ha_power: HaPowerStatus
     # Newest first, capped at activity_log.MAX_ENTRIES - piggybacks on the
     # same 5s status poll rather than its own endpoint, same as everything
     # else the dashboard shows.
@@ -230,6 +253,7 @@ class GrowProfileRow(SQLModel, table=True):
     soil_moisture_low_threshold: float
     soil_moisture_hysteresis: float
     alert_temp_c: float
+    telegram_alert_mode: str = "main"
     grow_profile_name: str
     tent_size_m2: Optional[str] = None
     start_date: Optional[date] = None

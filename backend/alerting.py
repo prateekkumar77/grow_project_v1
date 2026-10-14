@@ -21,3 +21,17 @@ def should_send_temp_alert(
     if last_sent is None:
         return True
     return now - last_sent >= timedelta(minutes=cooldown_minutes)
+
+
+# Prefix of the one activity-log entry the emergency-temperature alert itself
+# records (see post_telemetry's should_send_temp_alert() call site) - it
+# already gets its own, more detailed Telegram message unconditionally, so
+# "all alerts" mode must not also send a second, redundant one for it.
+TEMP_ALERT_ACTIVITY_PREFIX = "temperature alert sent:"
+
+
+def should_notify_all_alerts(telegram_alert_mode: str, message: str) -> bool:
+    """"all alerts" mode notifies on every activity-log entry except the
+    emergency-temperature one, which the dedicated alert path already
+    covers - "main alerts" mode never notifies here at all."""
+    return telegram_alert_mode == "all" and not message.startswith(TEMP_ALERT_ACTIVITY_PREFIX)

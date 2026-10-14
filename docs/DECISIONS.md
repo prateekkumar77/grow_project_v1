@@ -70,19 +70,46 @@ was tried before landing here.
   adds latency to the ESP32's telemetry POST; missing `TELEGRAM_BOT_TOKEN`/
   `TELEGRAM_CHAT_ID` just skips the message (logged, not raised) — the
   fan+AC response never depends on Telegram being configured.
+- `GrowProfile.telegram_alert_mode` ("main"/"all", editable from the
+  dashboard's Profile tab like every other profile field) is a second,
+  independent Telegram channel on top of the emergency alert above. "main"
+  (the default) is today's behavior, unchanged. "all" also fires a message
+  for every `ActivityLog` entry (relay transitions, mode/schedule changes,
+  profile saves, exports, auto-revert, ...) — uncapped, no cooldown, since
+  `RelayActivityTracker` already only logs actual on/off transitions, not
+  every ~20s telemetry cycle, so "all" doesn't spam on its own. Wired into
+  `ActivityLog.on_record` (`main.py`'s `_on_activity_recorded`, extending
+  the same hook that already persists every entry to the DB) rather than
+  `BackgroundTasks`, since `on_record` fires from contexts with no
+  `Request`/`BackgroundTasks` at all (e.g. `scheduler.py`'s
+  `_check_auto_revert` job) — a plain daemon `threading.Thread` sends
+  instead, working from any call site. Skips the one entry
+  (`"temperature alert sent: ..."`) the emergency path above already sends
+  its own, more detailed message for, so "all" mode never double-sends for
+  the same crossing. `alerting.py`'s `should_notify_all_alerts()` is the
+  pure decide-whether-to-notify logic (mode check + the dedup exclusion),
+  same unit-testable-without-mocking pattern as `should_send_temp_alert()`.
+  `telegram_alert_mode` lives on `GrowProfileIn`/`Out`/`Row` rather than a
+  new `AppState` field or endpoint — it's a grow-profile field like
+  `alert_temp_c`, so it reuses that entire existing
+  persistence/edit/save/migration machinery for free.
 - **AC moved from Home Assistant to a direct ESP32 IR transmitter**
-  (`firmware/src/ir_ac.*`), replaying the exact ON/OFF codes captured from
-  the real remote rather than decoding/constructing full protocol state
-  (temperature/mode/fan) - whichever way the capture tool reads them off
-  the real remote, which matches `decide_relay_state()`'s own binary `ac`
-  output exactly (on/off only), so nothing was actually given up by not
-  building full state control. This deployment's AC turned out to use the
-  COOLIX protocol, which IRremoteESP8266 recognizes natively - the two
-  captured codes are sent via its `sendCOOLIX()` rather than raw timing
-  replay, simpler and more reliable than reproducing ~200 raw timing
-  values by hand. An AC whose protocol the capture tool doesn't recognize
-  falls back to `sendRaw()` with the raw array it still prints alongside
-  the decoded form either way - see `firmware/include/ir_codes.h`.
+  (`firmware/src/ir_ac.*`), matching `decide_relay_state()`'s own binary
+  `ac` output exactly (on/off only) - there's no per-request temperature
+  control, every "on" targets one fixed temperature/mode/fan. This
+  deployment's AC turned out to use the COOLIX protocol, which
+  IRremoteESP8266 supports natively via a structured state class
+  (`IRCoolixAC` in `ir_Coolix.h`) rather than just raw timing replay -
+  `ir_ac.cpp` calls `setMode()`/`setFan()`/`setTemp()`/`setPower()` and
+  `send()` on every transition, so the target temperature
+  (`AC_TARGET_TEMP_C` in `config.h`) is a firmware constant, changeable
+  by reflashing alone, never requiring the physical remote again (unlike
+  an earlier version of this feature, which replayed two codes captured
+  verbatim from the remote - recapturing was the only way to change
+  anything about the ON state, including temperature). An AC whose
+  protocol the capture tool doesn't recognize has no structured class to
+  use and falls back to `sendRaw()` with the raw timing array the tool
+  still prints alongside the decoded form either way.
   `commanded.ac` already traveled to the ESP32 inside the same
   `relay_state` JSON fan/pump/light use (the field existed on `RelayState`
   from the start; the firmware just ignored it) - no new wire format
@@ -99,6 +126,31 @@ was tried before landing here.
   telemetry cycle - unlike a relay pin, re-sending the same IR code
   isn't a harmless no-op (many AC remotes send a full state packet on
   every press).
+- **Optional live power/current/voltage row**, sourced from an
+  HA-monitored smart plug's three sensor entities
+  (`ha_client.fetch_power_reading()`). Same shape as
+  `check_connection()`: polled on its own background job
+  (`scheduler._check_ha_power`, default 10s - faster than the 30s
+  connectivity check, since this is meant to feel "live" next to the
+  dashboard's own 5s poll) and cached in `AppState`, never fetched inline
+  from `GET /api/status`. Each of the three entities
+  (`HA_CURRENT_ENTITY`/`HA_VOLTAGE_ENTITY`/`HA_POWER_ENTITY`) is fetched
+  independently, so one unconfigured (blank env var), renamed, or
+  temporarily-unavailable entity only blanks that one value, not all
+  three - no all-or-nothing reading. `models.HaPowerStatus` is the
+  pydantic response shape; `ha_client.PowerReading` is the plain internal
+  dataclass `AppState` actually holds, same split as `decision_engine.Reading`.
+- Every live readout card (temp/humidity/soil/current/voltage/power) shows
+  a small today's-min/max badge in its corner, tracked **entirely
+  client-side** (`localStorage`, keyed `grow-minmax-<metric>`) - the
+  backend has no concept of this and never computes or stores it.
+  Resets at the UTC day boundary (`todayUtcDateString()`, the same "today"
+  convention the day chart/grow-day counter already use), so a stored
+  value from a previous day is treated as absent rather than shown stale.
+  Survives a page reload (that's the point of `localStorage` over an
+  in-memory object) but is per-browser/per-device, not synced across
+  anyone else viewing the dashboard - two people watching the same tent
+  from two browsers see two independent histories.
 - `GET /api/history` takes `limit` (default 100, max 1000) plus optional
   `since`/`until`, newest-first.
 

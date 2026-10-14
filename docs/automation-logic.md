@@ -79,14 +79,18 @@ All absolute tent temperature, not a rise relative to anything:
 
 The AC has no physical ESP32 relay, but unlike before it's no longer a
 Home Assistant device either — it's driven by an IR transmitter wired
-directly to the ESP32 (`firmware/src/ir_ac.*`), replaying the exact
-ON/OFF codes captured from the real AC remote (see `README.md`'s
-"Capturing your AC's IR codes"). This deployment's AC uses the COOLIX
-protocol, which IRremoteESP8266 recognizes natively, so the captured
-codes are sent via its `sendCOOLIX()` rather than raw timing replay; an
-AC whose protocol isn't recognized would fall back to `sendRaw()` with
-the raw array the capture tool still prints alongside. The decision
-engine's `ac` output is unchanged; only how it gets applied changed:
+directly to the ESP32 (`firmware/src/ir_ac.*`). This deployment's AC uses
+the COOLIX protocol, which IRremoteESP8266 supports natively via a
+structured state class (`IRCoolixAC`), so `ir_ac.cpp` sets
+mode/fan/temperature/power and sends on every transition rather than
+replaying a code captured from the real remote (see `README.md`'s
+"Capturing your AC's IR codes") — the target temperature
+(`AC_TARGET_TEMP_C` in `config.h`) is a firmware constant, changeable by
+reflashing alone, never requiring the physical remote. An AC whose
+protocol isn't recognized has no structured class to use and falls back
+to `sendRaw()` with the raw array the capture tool still prints
+alongside. The decision engine's `ac` output is unchanged; only how it
+gets applied changed:
 
 - **Fan / pump / AC**: all three now flow the same way — the ESP32 polls
   its commanded state (including `ac`) on every telemetry cycle and
