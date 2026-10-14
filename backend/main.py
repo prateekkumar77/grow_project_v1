@@ -687,7 +687,11 @@ def set_relay(payload: RelayIn, request: Request):
         if app_state.mode != "manual":
             raise HTTPException(status_code=409, detail="mode is not manual")
         setattr(app_state.commanded_relay_state, payload.relay, payload.state)
-        app_state.relay_activity.update(app_state.commanded_relay_state, request.state.user.username)
+        # note() just this relay, not update() all of them: commanded_relay_state's
+        # light/exhaust values are only refreshed on the next telemetry cycle, so
+        # diffing them here would log a spurious transition for whichever of
+        # those was just changed via its own endpoint.
+        app_state.relay_activity.note(payload.relay, payload.state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
         # ac picks this up the same way fan/pump do - on the ESP32's next
         # telemetry poll (~20s) - now that it's IR-driven by the ESP32
