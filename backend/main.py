@@ -21,7 +21,7 @@ from chart_data import bucket_by_step
 from decision_engine import GrowProfile
 from decision_engine import Reading as DecisionReading
 from decision_engine import decide_relay_state
-from exhaust_schedule import is_exhaust_on
+from exhaust_schedule import exhaust_follows_ac, is_exhaust_on
 from excel_export import (
     ACTIVITY_EXPORT_PATH,
     EXPORT_PATH,
@@ -329,16 +329,20 @@ def _light_status(now: datetime) -> LightStatus:
     )
 
 
-def _exhaust_status(now: datetime) -> ExhaustStatus:
+def _exhaust_status(now: datetime, ac_commanded: bool) -> ExhaustStatus:
     """Must be called with app_state.lock held. Single source of truth for
-    "what should exhaust be doing right now" - mirrors _light_status()
-    exactly, just with a run/interval duty cycle instead of an on_hours
-    window."""
-    commanded = (
-        is_exhaust_on(now, app_state.exhaust_run_minutes, app_state.exhaust_interval_minutes)
-        if app_state.exhaust_schedule_enabled
-        else app_state.exhaust_commanded
-    )
+    "what should exhaust be doing right now": the schedule if enabled,
+    else the AC's commanded state in auto mode, else the manual switch
+    (see exhaust_schedule.py). `ac_commanded` is passed in rather than
+    read from app_state because post_telemetry needs the AC value it's
+    about to send, not the one from the previous cycle."""
+    follows_ac = exhaust_follows_ac(app_state.exhaust_schedule_enabled, app_state.mode)
+    if app_state.exhaust_schedule_enabled:
+        commanded = is_exhaust_on(now, app_state.exhaust_run_minutes, app_state.exhaust_interval_minutes)
+    elif follows_ac:
+        commanded = ac_commanded
+    else:
+        commanded = app_state.exhaust_commanded
     return ExhaustStatus(
         schedule_enabled=app_state.exhaust_schedule_enabled,
         run_minutes=app_state.exhaust_run_minutes,
@@ -346,6 +350,7 @@ def _exhaust_status(now: datetime) -> ExhaustStatus:
         off_minutes=app_state.exhaust_interval_minutes - app_state.exhaust_run_minutes,
         commanded=commanded,
         reported=app_state.exhaust_reported,
+        follows_ac=follows_ac,
     )
 
 
@@ -393,15 +398,12 @@ def post_telemetry(
                 de_reading, app_state.commanded_relay_state, app_state.grow_profile
             )
 
-        # Light and exhaust are never touched by decide_relay_state() or
-        # the auto/manual mode above - each is driven entirely by its own
-        # schedule/manual switch, computed fresh every cycle.
-        commanded = commanded.model_copy(
-            update={
-                "light": _light_status(now).commanded,
-                "exhaust": _exhaust_status(now).commanded,
-            }
-        )
+        # Light is never touched by decide_relay_state() or the auto/manual
+        # mode above - it's driven entirely by its own schedule/manual
+        # switch, computed fresh every cycle. Exhaust is set further down,
+        # after the alert override, since in auto mode it mirrors the
+        # final AC value.
+        commanded = commanded.model_copy(update={"light": _light_status(now).commanded})
 
         # Crossing ALERT_TEMP_C forces fan and AC on directly, overriding
         # auto/manual mode, as an early-warning cooling response. Not
@@ -429,6 +431,10 @@ def post_telemetry(
                 )
                 background_tasks.add_task(telegram_client.send_message, message)
                 app_state.activity_log.record(f"temperature alert sent: {reading.temp_c:.1f}C", AUTO_ACTOR)
+
+        commanded = commanded.model_copy(
+            update={"exhaust": _exhaust_status(now, commanded.ac).commanded}
+        )
 
         app_state.commanded_relay_state = commanded
         app_state.relay_activity.update(commanded, AUTO_ACTOR)
@@ -465,10 +471,11 @@ def get_status():
         # from commanded_relay_state, which only updates on the ESP32's
         # own ~20s telemetry cadence) so the dashboard reflects a schedule
         # boundary the moment it's crossed, not up to a cycle late.
+        exhaust = _exhaust_status(now, app_state.commanded_relay_state.ac)
         commanded = app_state.commanded_relay_state.model_copy(
             update={
                 "light": _light_status(now).commanded,
-                "exhaust": _exhaust_status(now).commanded,
+                "exhaust": exhaust.commanded,
             }
         )
 
@@ -480,7 +487,7 @@ def get_status():
             latest_reading=app_state.latest_reading,
             offline=offline,
             light=_light_status(now),
-            exhaust=_exhaust_status(now),
+            exhaust=exhaust,
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
             ha_power=HaPowerStatus(
                 current_a=app_state.ha_power.current_a,
@@ -724,11 +731,11 @@ def set_light_manual(payload: LightManualIn, request: Request):
 @app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
 def set_exhaust_schedule(payload: ExhaustScheduleIn, request: Request):
     """Master switch for exhaust: enabling the schedule hands control to
-    is_exhaust_on() (independent of the environmental auto/manual `mode`
-    and of any sensor reading); disabling it falls back to whatever was
-    last set via /api/exhaust/manual. run_minutes/interval_minutes are
-    always saved even when the schedule is currently off, so they're
-    ready as soon as it's turned on. Mirrors /api/light/schedule exactly."""
+    is_exhaust_on() (overriding auto/manual `mode` and any sensor
+    reading); disabling it falls back to following the AC in auto mode,
+    or to whatever was last set via /api/exhaust/manual in manual mode.
+    run_minutes/interval_minutes are always saved even when the schedule
+    is currently off, so they're ready as soon as it's turned on."""
     with app_state.lock:
         actor = request.state.user.username
         if payload.enabled != app_state.exhaust_schedule_enabled:
@@ -743,7 +750,7 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn, request: Request):
         app_state.exhaust_schedule_enabled = payload.enabled
         app_state.exhaust_run_minutes = payload.run_minutes
         app_state.exhaust_interval_minutes = payload.interval_minutes
-        return _exhaust_status(datetime.utcnow())
+        return _exhaust_status(datetime.utcnow(), app_state.commanded_relay_state.ac)
 
 
 @app.post("/api/exhaust/manual", response_model=ExhaustStatus)
@@ -751,9 +758,11 @@ def set_exhaust_manual(payload: ExhaustManualIn, request: Request):
     with app_state.lock:
         if app_state.exhaust_schedule_enabled:
             raise HTTPException(status_code=409, detail="exhaust schedule is enabled")
+        if exhaust_follows_ac(app_state.exhaust_schedule_enabled, app_state.mode):
+            raise HTTPException(status_code=409, detail="exhaust follows AC in auto mode")
         app_state.relay_activity.note("exhaust", payload.state, request.state.user.username)
         app_state.exhaust_commanded = payload.state
-        return _exhaust_status(datetime.utcnow())
+        return _exhaust_status(datetime.utcnow(), app_state.commanded_relay_state.ac)
 
 
 @app.post("/api/export")

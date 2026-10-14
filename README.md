@@ -34,9 +34,10 @@ calls made where the original brief left something unspecified.
 The decision engine compares live readings directly against fixed
 grow-profile thresholds — no rolling baseline, no history lookup, so the
 same reading always produces the same decision. This governs **fan, AC,
-and pump**, every cycle, in **auto** mode only. **Light and exhaust** run
-on their own independent schedules instead (below) and are never touched
-by it. **Manual** mode bypasses the decision engine for fan/AC/pump
+and pump**, every cycle, in **auto** mode only. **Light** runs on its own
+independent schedule (below) and is never touched by it. **Exhaust** runs
+on its own schedule when that's enabled; otherwise, in auto mode it
+mirrors the AC (on when AC is on, off when AC is off). **Manual** mode bypasses the decision engine for fan/AC/pump
 entirely — relay state is whatever was last commanded from the dashboard
 — and auto-reverts to auto after a period of inactivity.
 
@@ -88,11 +89,17 @@ The exhaust fan has its own ESP32 relay too, controlled the same shape as
 the light (a schedule/manual master switch), just with a repeating
 **duty cycle** instead of a daily window — on for `run_minutes`, off for
 the rest of every `interval_minutes` (both 1-60, dashboard dropdowns),
-anchored to 00:00 UTC the same way. Never touched by
-`decide_relay_state()` or any sensor reading.
+anchored to 00:00 UTC the same way.
+
+When the schedule is **off**, what drives the exhaust depends on the mode:
+in **auto** mode it follows the AC — on whenever the AC is commanded on
+(including the `ALERT_TEMP_C` emergency override), off whenever it's off;
+in **manual** mode it holds whatever the dashboard's exhaust switch last
+set. An enabled schedule always wins, in either mode.
 
 `POST /api/exhaust/manual` is rejected with `409` while the schedule is
-on, and `run_minutes` can't exceed `interval_minutes` (`422`).
+on, or while the exhaust is following the AC (auto mode, schedule off);
+`run_minutes` can't exceed `interval_minutes` (`422`).
 
 ## Activity log
 

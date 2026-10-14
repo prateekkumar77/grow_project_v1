@@ -104,6 +104,9 @@ class ExhaustStatus(BaseModel):
     off_minutes: int
     commanded: bool
     reported: Optional[bool] = None
+    # True when the exhaust is mirroring the AC (auto mode, schedule off) -
+    # the manual switch has no effect then, see exhaust_follows_ac().
+    follows_ac: bool = False
 
 
 class GrowProfileIn(BaseModel):

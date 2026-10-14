@@ -1,11 +1,15 @@
-"""Pure exhaust-schedule logic: current time -> on/off.
+"""Pure exhaust logic: current time -> on/off, and which source drives it.
 
-Deliberately separate from decision_engine.py - the exhaust fan is never
-part of the environmental auto/manual mode or any sensor-driven decision.
-It has exactly two states of its own: "schedule" (this function decides,
-a repeating run/pause duty cycle) or "manual" (whatever was last
-commanded from the dashboard holds). The caller in main.py picks which
-one applies; this module only computes the schedule side.
+Deliberately separate from decision_engine.py - the exhaust is never part
+of a sensor-driven decision itself. Its commanded state comes from one of
+three sources, in priority order (the caller in main.py applies them):
+
+1. "schedule" enabled: is_exhaust_on() decides, a repeating run/pause duty
+   cycle, regardless of auto/manual mode.
+2. Schedule off, auto mode: exhaust mirrors the final commanded AC state -
+   on whenever AC is on, off whenever AC is off (see exhaust_follows_ac()).
+3. Schedule off, manual mode: whatever was last commanded from the
+   dashboard's exhaust switch holds.
 """
 from datetime import datetime
 
@@ -24,3 +28,9 @@ def is_exhaust_on(now_utc: datetime, run_minutes: int, interval_minutes: int) ->
     minutes_since_midnight = now_utc.hour * 60 + now_utc.minute + now_utc.second / 60
     phase = minutes_since_midnight % interval_minutes
     return phase < run_minutes
+
+
+def exhaust_follows_ac(schedule_enabled: bool, mode: str) -> bool:
+    """True when the exhaust should mirror the AC: only in auto mode, and
+    only while its own schedule is off - an enabled schedule always wins."""
+    return not schedule_enabled and mode == "auto"

@@ -85,8 +85,7 @@ def decide_relay_state(reading: Reading, previous_state: RelayState, profile: Gr
         pump = False
     # else: within the hysteresis band - hold whatever the pump was doing.
 
-    # Exhaust is never touched here - it's driven entirely by its own
-    # run/interval duty-cycle schedule (see exhaust_schedule.py), same as
-    # light is driven by its own schedule. The caller overwrites it after
-    # this call, same pattern as light.
+    # Exhaust is never set here. The caller fills it in afterwards: its own
+    # schedule if enabled, otherwise (in auto mode) a mirror of the final
+    # `ac` value - see exhaust_schedule.py.
     return RelayState(fan=fan, ac=ac, pump=pump)

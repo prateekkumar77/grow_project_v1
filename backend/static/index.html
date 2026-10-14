@@ -1034,7 +1034,7 @@
     <div class="section-title">
       <i data-lucide="wind" width="14" height="14" stroke-width="1.8"></i>
       exhaust
-      <span class="meta" style="margin-left: auto; font-weight: 400;">not driven by any sensor</span>
+      <span class="meta" id="exhaust-source" style="margin-left: auto; font-weight: 400;">manual or schedule</span>
     </div>
 
     <div class="control-row">
@@ -1577,8 +1577,13 @@
     var reported = exhaust.reported != null ? exhaust.reported : exhaust.commanded;
     btn.textContent = reported ? "on" : "off";
     btn.classList.toggle("on", !!reported);
-    btn.classList.toggle("enabled", !exhaust.schedule_enabled && currentUserRole !== "viewer");
-    btn.disabled = exhaust.schedule_enabled || currentUserRole === "viewer";
+    var locked = exhaust.schedule_enabled || exhaust.follows_ac;
+    btn.classList.toggle("enabled", !locked && currentUserRole !== "viewer");
+    btn.disabled = locked || currentUserRole === "viewer";
+
+    document.getElementById("exhaust-source").textContent = exhaust.schedule_enabled
+      ? "on schedule"
+      : exhaust.follows_ac ? "following AC (auto mode)" : "manual";
 
     var pending = exhaust.reported != null && exhaust.commanded !== exhaust.reported;
     document.getElementById("exhaust-pending").classList.toggle("show", pending);

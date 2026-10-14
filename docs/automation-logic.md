@@ -183,11 +183,11 @@ network drops, same as fan. Unlike fan, though, its schedule keeps
 computing correctly in the background even while offline — it just can't
 reach the ESP32 to apply a change until connectivity returns.
 
-## Exhaust: its own duty-cycle schedule, never sensor-driven
+## Exhaust: its own duty-cycle schedule, or following the AC
 
-The exhaust fan has its own ESP32 relay too, and follows the exact same
-"own schedule, independent of mode" pattern as the light — but the
-schedule *shape* is different. Rather than one on/off window per day, it's
+The exhaust fan has its own ESP32 relay too, with a schedule/manual master
+switch like the light — but the schedule *shape* is different, and with
+the schedule off it follows the AC in auto mode. Rather than one on/off window per day, it's
 a repeating **duty cycle**: on for `run_minutes`, then off for the rest of
 every `interval_minutes` window, cycling continuously (`exhaust_schedule.
 is_exhaust_on()`). Both `run_minutes` and `interval_minutes` are 1-60,
@@ -199,15 +199,18 @@ is meaningless.
   telemetry cycle - same restart-safety property as the light schedule,
   since it's a pure function of wall-clock time with no stored "next
   toggle" state.
-- **Schedule off**: the exhaust is under direct manual control from the
-  dashboard (`POST /api/exhaust/manual`) — it just holds whatever it was
-  last set to.
+- **Schedule off, auto mode**: the exhaust mirrors the final commanded
+  AC state — on whenever AC is on, off whenever AC is off — including the
+  `ALERT_TEMP_C` override, since it's set after that override is applied
+  (`exhaust_schedule.exhaust_follows_ac()`).
+- **Schedule off, manual mode**: the exhaust is under direct manual
+  control from the dashboard (`POST /api/exhaust/manual`) — it just holds
+  whatever it was last set to.
 
-Same master-switch pattern as light: a manual command while the schedule
-is enabled is rejected with `409`. Crucially, **exhaust is never touched
-by `decide_relay_state()`** — no humidity or temperature reading ever
-turns it on or off; only its own schedule or a manual dashboard command
-does.
+A manual command is rejected with `409` while the schedule is enabled or
+while the exhaust is following the AC. `decide_relay_state()` itself still
+never sets the exhaust; it only reaches it indirectly, through the AC
+decision it makes in auto mode.
 
 ## What the firmware does entirely on its own
 

@@ -20,8 +20,11 @@ was tried before landing here.
   `SOIL_MOISTURE_HYSTERESIS`) so the pump doesn't chatter at the boundary.
 - Manual mode bypasses this function entirely — `main.py` just reuses the
   last dashboard-commanded state.
-- Exhaust is never part of this function — it's driven only by its own
-  schedule (see below), never by a sensor reading.
+- Exhaust is never set by this function directly. With its own schedule
+  off, auto mode makes it mirror the AC this function decides (after the
+  `ALERT_TEMP_C` override), so it ventilates exactly while the AC runs;
+  an enabled exhaust schedule always takes priority, and manual mode uses
+  the dashboard's exhaust switch (`exhaust_schedule.exhaust_follows_ac()`).
 
 ## Pump safety (firmware)
 
