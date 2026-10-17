@@ -370,9 +370,14 @@ A segmented toggle in the dashboard's **Profile** tab ("telegram alerts"
 panel) switches between two notification modes, saved with the rest of the
 grow profile:
 
-- **main alerts** (default) — exactly the above: only the
-  emergency-temperature alert, rate-limited by
-  `ALERT_NOTIFY_COOLDOWN_MINUTES`.
+- **main alerts** (default) — the emergency-temperature alert above,
+  rate-limited by `ALERT_NOTIFY_COOLDOWN_MINUTES`, plus the **AC power
+  check**: 60s after an AC off command is sent, if the Home Assistant
+  smart plug still reads 200W or more, or 60s after an on command, if it
+  reads under 30W, Telegram says to check the AC (it likely missed the IR
+  signal). Needs `HA_POWER_ENTITY` set (see "Live power row"); thresholds
+  and delay are `AC_OFF_MAX_POWER_W`/`AC_ON_MIN_POWER_W`/
+  `AC_POWER_CHECK_DELAY_SECONDS`.
 - **all alerts** — also sends a Telegram message for every entry that lands
   in the dashboard's activity feed: relay toggles (manual or auto-mode),
   mode switches, light/exhaust schedule changes, profile saves, exports.

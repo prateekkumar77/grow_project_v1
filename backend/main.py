@@ -171,6 +171,12 @@ class AppState:
         # first poll completes or if the HA_*_ENTITY env vars are unset.
         self.ha_power: ha_client.PowerReading = ha_client.PowerReading()
         self.ha_power_checked_at: Optional[datetime] = None
+        # AC power check: the `ac` value last returned to the ESP32 (None
+        # until the first telemetry after startup), and the check queued
+        # when that value changed - (ac_on, sent_at), consumed by
+        # scheduler._check_ac_power once AC_POWER_CHECK_DELAY_SECONDS pass.
+        self.ac_last_sent: Optional[bool] = None
+        self.ac_power_check: Optional[tuple] = None
         # Last 20 notable actions, for the dashboard's activity feed.
         self.activity_log = ActivityLog()
         # Tracks each relay's last-logged value so only actual on/off
@@ -435,6 +441,16 @@ def post_telemetry(
         commanded = commanded.model_copy(
             update={"exhaust": _exhaust_status(now, commanded.ac).commanded}
         )
+
+        # The ESP32 fires its IR signal the moment it gets this response, so
+        # a changed `ac` here is when the AC was actually told to switch -
+        # queue a power check for it (a newer change replaces an older,
+        # not-yet-run one). Skipped on the very first telemetry after a
+        # backend restart, since there's no known previous value to tell
+        # whether the firmware actually transmitted anything.
+        if app_state.ac_last_sent is not None and commanded.ac != app_state.ac_last_sent:
+            app_state.ac_power_check = (commanded.ac, now)
+        app_state.ac_last_sent = commanded.ac
 
         app_state.commanded_relay_state = commanded
         app_state.relay_activity.update(commanded, AUTO_ACTOR)

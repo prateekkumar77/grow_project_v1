@@ -133,6 +133,17 @@ was tried before landing here.
   misses a signal and IR gives no way to detect that. It's non-blocking
   (`IrAcController::tick()` in `loop()`), and re-armed on every new
   command, so a quick on→off never gets a stale "on" resent after it.
+- **AC power check** (a "main" Telegram alert, so it fires in both alert
+  modes): `post_telemetry` queues a check whenever the `ac` value it
+  returns to the ESP32 changes - that response is when the IR signal is
+  actually fired - and `scheduler._check_ac_power` runs it after each HA
+  power poll once `AC_POWER_CHECK_DELAY_SECONDS` (60s, covering the
+  firmware's 30s backup resend) have passed: off but >= 200W, or on but
+  < 30W, sends "check AC". One check per transition, a newer change
+  replaces a pending one, skipped with no power reading, and not queued on
+  the first telemetry after a backend restart (no known previous value).
+  Its activity-log entry is excluded from "all alerts" mode like the
+  temperature alert's, so it's never sent twice.
 - **Optional live power/current/voltage row**, sourced from an
   HA-monitored smart plug's three sensor entities
   (`ha_client.fetch_power_reading()`). Same shape as
