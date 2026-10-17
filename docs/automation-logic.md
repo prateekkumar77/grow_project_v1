@@ -98,6 +98,8 @@ gets applied changed:
   only on an actual on→off or off→on transition, never every cycle
   (unlike a relay pin, re-sending the same IR code isn't a harmless
   no-op — many AC remotes send a full state packet on every press).
+  Each transition is sent once more 30s later (`AC_IR_RESEND_DELAY_MS`)
+  as a backup in case the AC missed the first signal.
 - `/api/status` reports the ESP32's own `reported_relay_state.ac` as
   "reported," the same as fan/pump. This is still not a *confirmed* real
   state — IR is fire-and-forget, with no feedback channel telling the

@@ -128,7 +128,11 @@ was tried before landing here.
   transmits on an actual on→off/off→on transition, never every
   telemetry cycle - unlike a relay pin, re-sending the same IR code
   isn't a harmless no-op (many AC remotes send a full state packet on
-  every press).
+  every press). The one exception is a single backup resend of the same
+  state `AC_IR_RESEND_DELAY_MS` (30s) later, since the AC occasionally
+  misses a signal and IR gives no way to detect that. It's non-blocking
+  (`IrAcController::tick()` in `loop()`), and re-armed on every new
+  command, so a quick on→off never gets a stale "on" resent after it.
 - **Optional live power/current/voltage row**, sourced from an
   HA-monitored smart plug's three sensor entities
   (`ha_client.fetch_power_reading()`). Same shape as

@@ -330,6 +330,9 @@ channel, so `reported_relay_state.ac` is "what the ESP32 last told the AC
 to do," not a verified real state. The firmware only transmits on an
 actual on→off or off→on transition (never every telemetry cycle), since
 unlike a relay pin, re-sending the same IR code isn't a harmless no-op.
+As a backup for a missed signal, each transition is sent twice: once
+immediately and once more 30 seconds later (`AC_IR_RESEND_DELAY_MS` in
+`config.h`).
 
 Crossing `ALERT_TEMP_C` forces fan and AC on directly, and (if configured)
 also fires a Telegram message — see the next section.

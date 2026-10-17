@@ -76,6 +76,7 @@ void loop() {
   // Safety logic must run every iteration, independent of the telemetry
   // cadence and independent of network state.
   relays.tick(lastTempC, WiFi.status() == WL_CONNECTED);
+  acController.tick();
 
   bool justReconnected = serviceWifi();
 
