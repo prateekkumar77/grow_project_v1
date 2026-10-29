@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import threading
-from datetime import date, datetime, timedelta
+import time as time_module
+import zoneinfo
+from datetime import date, datetime, time, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +31,7 @@ from excel_export import (
     export_activity_log_to_excel,
     export_readings_to_excel,
 )
-from light_schedule import is_light_on
+from light_schedule import is_light_on, on_hours as light_on_hours
 from models import (
     ActivityEntryOut,
     ActivityLogRow,
@@ -44,6 +47,10 @@ from models import (
     LightScheduleIn,
     LightStatus,
     ModeIn,
+    PumpRunCommand,
+    PumpRunIn,
+    PumpScheduleIn,
+    PumpStatus,
     ReadingRow,
     RelayIn,
     RelayState,
@@ -52,6 +59,7 @@ from models import (
     TelemetryIn,
     TelemetryOut,
 )
+from pump_schedule import next_run_at, slot_start
 from scheduler import start_scheduler
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -79,12 +87,17 @@ TENT_SIZE_M2 = os.getenv("TENT_SIZE_M2", "")
 # otherwise as cosmetic as the two above. Blank by default; YYYY-MM-DD.
 GROW_START_DATE = os.getenv("GROW_START_DATE", "")
 
+# First-run default for the grow profile's schedule_timezone - the zone the
+# light/exhaust/pump schedules' wall-clock times are in.
+SCHEDULE_TIMEZONE = os.getenv("SCHEDULE_TIMEZONE", "UTC")
+
 # Light schedule defaults. Starts with the schedule OFF (light under
 # manual control, off) so a fresh deploy never starts cycling a light
 # based on an unreviewed default photoperiod - the grower opts in via the
-# dashboard once they've picked an on_hours value that's actually right
-# for what's in the tent.
-LIGHT_DEFAULT_ON_HOURS = int(os.getenv("LIGHT_DEFAULT_ON_HOURS", "18"))
+# dashboard once they've picked on/off times that are actually right for
+# what's in the tent. HH:MM in the schedule timezone.
+LIGHT_DEFAULT_ON_TIME = time.fromisoformat(os.getenv("LIGHT_DEFAULT_ON_TIME", "06:00"))
+LIGHT_DEFAULT_OFF_TIME = time.fromisoformat(os.getenv("LIGHT_DEFAULT_OFF_TIME", "00:00"))
 LIGHT_SCHEDULE_ENABLED_DEFAULT = os.getenv("LIGHT_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
 
 # Exhaust schedule defaults - same "starts off" rationale as the light
@@ -93,6 +106,14 @@ LIGHT_SCHEDULE_ENABLED_DEFAULT = os.getenv("LIGHT_SCHEDULE_ENABLED_DEFAULT", "fa
 EXHAUST_DEFAULT_RUN_MINUTES = int(os.getenv("EXHAUST_DEFAULT_RUN_MINUTES", "1"))
 EXHAUST_DEFAULT_INTERVAL_MINUTES = int(os.getenv("EXHAUST_DEFAULT_INTERVAL_MINUTES", "5"))
 EXHAUST_SCHEDULE_ENABLED_DEFAULT = os.getenv("EXHAUST_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
+
+# Pump schedule defaults - same "starts off" rationale again.
+PUMP_SCHEDULE_ENABLED_DEFAULT = os.getenv("PUMP_SCHEDULE_ENABLED_DEFAULT", "false").lower() == "true"
+PUMP_DEFAULT_INTERVAL_HOURS = int(os.getenv("PUMP_DEFAULT_INTERVAL_HOURS", "12"))
+PUMP_DEFAULT_RUN_SECONDS = int(os.getenv("PUMP_DEFAULT_RUN_SECONDS", "3"))
+# A pump run request the ESP32 hasn't picked up within this long (e.g. it
+# was offline) is dropped, so a watering doesn't fire hours late.
+PUMP_RUN_REQUEST_TTL_SECONDS = float(os.getenv("PUMP_RUN_REQUEST_TTL_SECONDS", "300"))
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
@@ -111,10 +132,9 @@ def _default_grow_profile() -> GrowProfileOut:
         temp_fan_threshold_c=thresholds.temp_fan_threshold_c,
         temp_ac_threshold_c=thresholds.temp_ac_threshold_c,
         temp_low_threshold_c=thresholds.temp_low_threshold_c,
-        soil_moisture_low_threshold=thresholds.soil_moisture_low_threshold,
-        soil_moisture_hysteresis=thresholds.soil_moisture_hysteresis,
         alert_temp_c=ALERT_TEMP_C,
         telegram_alert_mode=TELEGRAM_ALERT_MODE,
+        schedule_timezone=SCHEDULE_TIMEZONE,
         grow_profile_name=GROW_PROFILE_NAME,
         tent_size_m2=TENT_SIZE_M2 or None,
         start_date=date.fromisoformat(GROW_START_DATE) if GROW_START_DATE else None,
@@ -137,8 +157,8 @@ class AppState:
         self.last_seen: Optional[datetime] = None
         self.latest_reading: Optional[SensorReading] = None
         self.last_manual_activity: Optional[datetime] = None
-        # 0 unless the firmware is currently refusing a commanded pump-on
-        # due to its own post-cap cooldown - see post_telemetry.
+        # 0 unless the firmware is currently refusing pump runs due to its
+        # own post-cap cooldown - reported by the ESP32 every cycle.
         self.pump_cooldown_remaining_s: float = 0.0
         # None until the first high-temperature Telegram alert ever fires -
         # see should_send_temp_alert() for the cooldown this gates.
@@ -148,7 +168,8 @@ class AppState:
         # "next toggle" state) or, when the schedule is off, this manual
         # value holds until the dashboard changes it.
         self.light_schedule_enabled: bool = LIGHT_SCHEDULE_ENABLED_DEFAULT
-        self.light_on_hours: int = LIGHT_DEFAULT_ON_HOURS
+        self.light_on_time: time = LIGHT_DEFAULT_ON_TIME
+        self.light_off_time: time = LIGHT_DEFAULT_OFF_TIME
         self.light_commanded: bool = False
         self.light_reported: Optional[bool] = None
         # Exhaust: same independent-of-`mode` pattern as light, but a
@@ -160,6 +181,24 @@ class AppState:
         self.exhaust_interval_minutes: int = EXHAUST_DEFAULT_INTERVAL_MINUTES
         self.exhaust_commanded: bool = False
         self.exhaust_reported: Optional[bool] = None
+        # Pump: never part of `mode` or any reading. Runs only as one-time
+        # timed requests - manual (POST /api/pump/run) or one per schedule
+        # slot (pump_schedule.slot_start) - picked up by the ESP32 via
+        # TelemetryOut.pump_run and re-sent until it reports the id back.
+        self.pump_schedule_enabled: bool = PUMP_SCHEDULE_ENABLED_DEFAULT
+        self.pump_interval_hours: int = PUMP_DEFAULT_INTERVAL_HOURS
+        self.pump_run_seconds: int = PUMP_DEFAULT_RUN_SECONDS
+        # Schedule slot a run was last requested for. Starts as the current
+        # slot (set in on_startup) so a restart never triggers an
+        # immediate extra run.
+        self.pump_last_slot: Optional[datetime] = None
+        # Ids only ever increase and start from the current Unix time, so a
+        # backend restart can't reuse an id the firmware already acted on.
+        self.pump_last_run_id: int = 0
+        self.pump_pending_run: Optional[PumpRunCommand] = None
+        self.pump_pending_since: Optional[datetime] = None
+        self.pump_last_run_at: Optional[datetime] = None
+        self.pump_reported: Optional[bool] = None
         # Home Assistant reachability, refreshed on its own schedule (see
         # scheduler._check_ha_connection) rather than per-request. None
         # until the first check completes.
@@ -302,6 +341,7 @@ def on_startup():
     # GrowProfileOut validation on the very next startup; start_date can
     # take a bare NULL because it's Optional.
     _ensure_grow_profile_column("telegram_alert_mode", "TEXT DEFAULT 'main'")
+    _ensure_grow_profile_column("schedule_timezone", "TEXT DEFAULT 'UTC'")
     # No row yet means no dashboard save has ever happened - leave
     # app_state.grow_profile at its .env-derived default rather than
     # writing one now; a DB row should only ever appear from an explicit
@@ -310,6 +350,8 @@ def on_startup():
         row = session.get(GrowProfileRow, 1)
         if row is not None:
             app_state.grow_profile = GrowProfileOut(**row.model_dump(exclude={"id"}))
+    with app_state.lock:
+        app_state.pump_last_slot = slot_start(_schedule_now(), app_state.pump_interval_hours)
     app.state.scheduler = start_scheduler(app_state, engine)
 
 
@@ -320,19 +362,58 @@ def on_shutdown():
         scheduler.shutdown(wait=False)
 
 
-def _light_status(now: datetime) -> LightStatus:
+def _schedule_now() -> datetime:
+    """Current wall-clock time (naive) in the grow profile's
+    schedule_timezone - what the light/exhaust/pump schedules are anchored
+    to. Everything else (stored readings, activity log, last_seen) stays
+    UTC."""
+    tz = ZoneInfo(app_state.grow_profile.schedule_timezone)
+    return datetime.now(tz).replace(tzinfo=None)
+
+
+def _light_status(now_local: datetime) -> LightStatus:
     """Must be called with app_state.lock held. Single source of truth for
     "what should the light be doing right now" - used by /api/telemetry,
     /api/status, and both light control endpoints, so they can never
-    disagree with each other."""
-    commanded = is_light_on(now, app_state.light_on_hours) if app_state.light_schedule_enabled else app_state.light_commanded
+    disagree with each other. `now_local` is _schedule_now()."""
+    on_time, off_time = app_state.light_on_time, app_state.light_off_time
+    commanded = (
+        is_light_on(now_local, on_time, off_time) if app_state.light_schedule_enabled else app_state.light_commanded
+    )
+    hours_on = light_on_hours(on_time, off_time)
     return LightStatus(
         schedule_enabled=app_state.light_schedule_enabled,
-        on_hours=app_state.light_on_hours,
-        off_hours=24 - app_state.light_on_hours,
+        on_time=on_time,
+        off_time=off_time,
+        on_hours=hours_on,
+        off_hours=24 - hours_on,
         commanded=commanded,
         reported=app_state.light_reported,
     )
+
+
+def _pump_status(now_local: datetime) -> PumpStatus:
+    """Must be called with app_state.lock held."""
+    return PumpStatus(
+        schedule_enabled=app_state.pump_schedule_enabled,
+        interval_hours=app_state.pump_interval_hours,
+        run_seconds=app_state.pump_run_seconds,
+        next_run_at=next_run_at(now_local, app_state.pump_interval_hours) if app_state.pump_schedule_enabled else None,
+        last_run_at=app_state.pump_last_run_at,
+        run_pending=app_state.pump_pending_run is not None,
+        reported=app_state.pump_reported,
+        cooldown_remaining_s=app_state.pump_cooldown_remaining_s,
+    )
+
+
+def _request_pump_run(seconds: int, actor: str, now: datetime) -> None:
+    """Must be called with app_state.lock held. Queues a one-time run for
+    the ESP32's next telemetry reply. A newer request replaces an older,
+    not-yet-picked-up one."""
+    app_state.pump_last_run_id = max(app_state.pump_last_run_id + 1, int(time_module.time()))
+    app_state.pump_pending_run = PumpRunCommand(id=app_state.pump_last_run_id, seconds=seconds)
+    app_state.pump_pending_since = now
+    app_state.activity_log.record(f"pump run {seconds}s", actor)
 
 
 def _exhaust_status(now: datetime, ac_commanded: bool) -> ExhaustStatus:
@@ -376,24 +457,11 @@ def post_telemetry(
         app_state.exhaust_reported = payload.relay_state.exhaust
         app_state.latest_reading = reading
         app_state.pump_cooldown_remaining_s = payload.pump_cooldown_remaining_s
+        app_state.pump_reported = payload.relay_state.pump
+        now_local = _schedule_now()
 
         if app_state.mode == "manual":
             commanded = app_state.commanded_relay_state
-            # Manual mode's pump command is a single static value with no
-            # concept of automatic re-arming - unlike auto mode's decision
-            # engine, which actively re-evaluates it from soil moisture
-            # every cycle, nothing here ever revisits it. If the firmware's
-            # own 30s/60s safety cap just cut the pump, cancel the standing
-            # "on" command rather than silently leaving it in place -
-            # otherwise the firmware would honor that same stale command
-            # the moment the cooldown clears, and the pump would restart on
-            # its own, repeating indefinitely until someone notices and
-            # turns it off. Requiring a fresh POST /api/relay to run it
-            # again matches what "manual" means: nothing runs unless a
-            # person asks for it right now. Auto mode is never touched by
-            # this - its own re-evaluation below is unaffected.
-            if payload.pump_cooldown_remaining_s > 0 and commanded.pump:
-                commanded.pump = False
         else:
             de_reading = DecisionReading(
                 temp_c=reading.temp_c,
@@ -408,8 +476,9 @@ def post_telemetry(
         # mode above - it's driven entirely by its own schedule/manual
         # switch, computed fresh every cycle. Exhaust is set further down,
         # after the alert override, since in auto mode it mirrors the
-        # final AC value.
-        commanded = commanded.model_copy(update={"light": _light_status(now).commanded})
+        # final AC value. The pump is never commanded via relay_state at
+        # all - only via the pump_run request below.
+        commanded = commanded.model_copy(update={"light": _light_status(now_local).commanded, "pump": False})
 
         # Crossing ALERT_TEMP_C forces fan and AC on directly, overriding
         # auto/manual mode, as an early-warning cooling response. Not
@@ -439,8 +508,26 @@ def post_telemetry(
                 app_state.activity_log.record(f"temperature alert sent: {reading.temp_c:.1f}C", AUTO_ACTOR)
 
         commanded = commanded.model_copy(
-            update={"exhaust": _exhaust_status(now, commanded.ac).commanded}
+            update={"exhaust": _exhaust_status(now_local, commanded.ac).commanded}
         )
+
+        # Pump run requests: the firmware reporting the pending id back
+        # means it acted on it - stop sending. One left unclaimed too long
+        # (ESP32 offline) is dropped rather than watering hours late.
+        pending = app_state.pump_pending_run
+        if pending is not None and payload.pump_last_run_id == pending.id:
+            app_state.pump_pending_run = None
+            app_state.pump_last_run_at = now
+        elif pending is not None and (now - app_state.pump_pending_since).total_seconds() > PUMP_RUN_REQUEST_TTL_SECONDS:
+            app_state.pump_pending_run = None
+            app_state.activity_log.record(f"pump run {pending.seconds}s dropped - ESP32 didn't pick it up", AUTO_ACTOR)
+        # One scheduled run per slot (e.g. at 00:00 and 12:00 for every
+        # 12h), requested on the first telemetry cycle in a new slot.
+        if app_state.pump_schedule_enabled:
+            slot = slot_start(now_local, app_state.pump_interval_hours)
+            if app_state.pump_last_slot is None or slot > app_state.pump_last_slot:
+                app_state.pump_last_slot = slot
+                _request_pump_run(app_state.pump_run_seconds, AUTO_ACTOR, now)
 
         # The ESP32 fires its IR signal the moment it gets this response, so
         # a changed `ac` here is when the AC was actually told to switch -
@@ -470,7 +557,9 @@ def post_telemetry(
         session.add(row)
         session.commit()
 
-    return TelemetryOut(mode=mode, relay_state=commanded)
+        pump_run = app_state.pump_pending_run
+
+    return TelemetryOut(mode=mode, relay_state=commanded, pump_run=pump_run)
 
 
 @app.get("/api/status", response_model=StatusOut)
@@ -487,10 +576,12 @@ def get_status():
         # from commanded_relay_state, which only updates on the ESP32's
         # own ~20s telemetry cadence) so the dashboard reflects a schedule
         # boundary the moment it's crossed, not up to a cycle late.
-        exhaust = _exhaust_status(now, app_state.commanded_relay_state.ac)
+        now_local = _schedule_now()
+        light = _light_status(now_local)
+        exhaust = _exhaust_status(now_local, app_state.commanded_relay_state.ac)
         commanded = app_state.commanded_relay_state.model_copy(
             update={
-                "light": _light_status(now).commanded,
+                "light": light.commanded,
                 "exhaust": exhaust.commanded,
             }
         )
@@ -502,7 +593,7 @@ def get_status():
             last_seen=app_state.last_seen,
             latest_reading=app_state.latest_reading,
             offline=offline,
-            light=_light_status(now),
+            light=light,
             exhaust=exhaust,
             ha=HaStatus(reachable=app_state.ha_reachable, checked_at=app_state.ha_last_checked),
             ha_power=HaPowerStatus(
@@ -511,11 +602,11 @@ def get_status():
                 power_w=app_state.ha_power.power_w,
                 checked_at=app_state.ha_power_checked_at,
             ),
+            pump=_pump_status(now_local),
             activity=[
                 ActivityEntryOut(timestamp=e.timestamp, message=e.message, actor=e.actor)
                 for e in app_state.activity_log.recent()
             ],
-            pump_cooldown_remaining_s=app_state.pump_cooldown_remaining_s,
         )
 
 
@@ -573,7 +664,12 @@ def set_profile(payload: GrowProfileIn, request: Request, session: Session = Dep
         if new_profile != app_state.grow_profile:
             message = _describe_profile_changes(app_state.grow_profile, new_profile)
             app_state.activity_log.record(message, request.state.user.username)
+        timezone_changed = new_profile.schedule_timezone != app_state.grow_profile.schedule_timezone
         app_state.grow_profile = new_profile
+        # pump_last_slot is a wall-clock time in the old zone - re-anchor it
+        # so switching zones can't look like a new slot and water instantly.
+        if timezone_changed:
+            app_state.pump_last_slot = slot_start(_schedule_now(), app_state.pump_interval_hours)
 
         row = session.get(GrowProfileRow, 1)
         if row is None:
@@ -709,7 +805,7 @@ def set_relay(payload: RelayIn, request: Request):
         # those was just changed via its own endpoint.
         app_state.relay_activity.note(payload.relay, payload.state, request.state.user.username)
         app_state.last_manual_activity = datetime.utcnow()
-        # ac picks this up the same way fan/pump do - on the ESP32's next
+        # ac picks this up the same way fan does - on the ESP32's next
         # telemetry poll (~20s) - now that it's IR-driven by the ESP32
         # itself rather than needing an immediate separate push to Home
         # Assistant (which had no poll cycle of its own to piggyback on).
@@ -725,17 +821,22 @@ def set_light_schedule(payload: LightScheduleIn, request: Request):
     """Master switch for the light: enabling the schedule hands control to
     is_light_on() (independent of the environmental auto/manual `mode`);
     disabling it falls back to whatever was last set via
-    /api/light/manual. on_hours is always saved even when the schedule is
-    currently off, so it's ready as soon as it's turned on."""
+    /api/light/manual. on/off times are always saved even when the
+    schedule is currently off, so they're ready as soon as it's turned on."""
+    on_time = payload.on_time.replace(second=0, microsecond=0)
+    off_time = payload.off_time.replace(second=0, microsecond=0)
     with app_state.lock:
         actor = request.state.user.username
         if payload.enabled != app_state.light_schedule_enabled:
             app_state.activity_log.record(f"light schedule {'on' if payload.enabled else 'off'}", actor)
-        if payload.on_hours != app_state.light_on_hours:
-            app_state.activity_log.record(f"light schedule set: {payload.on_hours}h on/day", actor)
+        if (on_time, off_time) != (app_state.light_on_time, app_state.light_off_time):
+            app_state.activity_log.record(
+                f"light schedule set: on {on_time:%H:%M}, off {off_time:%H:%M}", actor
+            )
         app_state.light_schedule_enabled = payload.enabled
-        app_state.light_on_hours = payload.on_hours
-        return _light_status(datetime.utcnow())
+        app_state.light_on_time = on_time
+        app_state.light_off_time = off_time
+        return _light_status(_schedule_now())
 
 
 @app.post("/api/light/manual", response_model=LightStatus)
@@ -745,7 +846,7 @@ def set_light_manual(payload: LightManualIn, request: Request):
             raise HTTPException(status_code=409, detail="light schedule is enabled")
         app_state.relay_activity.note("light", payload.state, request.state.user.username)
         app_state.light_commanded = payload.state
-        return _light_status(datetime.utcnow())
+        return _light_status(_schedule_now())
 
 
 @app.post("/api/exhaust/schedule", response_model=ExhaustStatus)
@@ -770,7 +871,7 @@ def set_exhaust_schedule(payload: ExhaustScheduleIn, request: Request):
         app_state.exhaust_schedule_enabled = payload.enabled
         app_state.exhaust_run_minutes = payload.run_minutes
         app_state.exhaust_interval_minutes = payload.interval_minutes
-        return _exhaust_status(datetime.utcnow(), app_state.commanded_relay_state.ac)
+        return _exhaust_status(_schedule_now(), app_state.commanded_relay_state.ac)
 
 
 @app.post("/api/exhaust/manual", response_model=ExhaustStatus)
@@ -782,7 +883,54 @@ def set_exhaust_manual(payload: ExhaustManualIn, request: Request):
             raise HTTPException(status_code=409, detail="exhaust follows AC in auto mode")
         app_state.relay_activity.note("exhaust", payload.state, request.state.user.username)
         app_state.exhaust_commanded = payload.state
-        return _exhaust_status(datetime.utcnow(), app_state.commanded_relay_state.ac)
+        return _exhaust_status(_schedule_now(), app_state.commanded_relay_state.ac)
+
+
+@app.post("/api/pump/schedule", response_model=PumpStatus)
+def set_pump_schedule(payload: PumpScheduleIn, request: Request):
+    """Master switch for the pump: enabled = one run of run_seconds per
+    interval_hours slot (pump_schedule.py); disabled = manual runs only
+    (POST /api/pump/run). The pump is never driven by auto/manual mode or
+    soil moisture. Settings are saved even while the schedule is off."""
+    with app_state.lock:
+        actor = request.state.user.username
+        now_local = _schedule_now()
+        if payload.enabled != app_state.pump_schedule_enabled:
+            app_state.activity_log.record(f"pump schedule {'on' if payload.enabled else 'off'}", actor)
+        if (payload.interval_hours, payload.run_seconds) != (app_state.pump_interval_hours, app_state.pump_run_seconds):
+            app_state.activity_log.record(
+                f"pump schedule set: {payload.run_seconds}s every {payload.interval_hours}h", actor
+            )
+        # Changing the interval or turning the schedule on counts the slot
+        # we're already in as done, so the first scheduled run is at the
+        # next boundary rather than immediately.
+        if (payload.enabled and not app_state.pump_schedule_enabled) or (
+            payload.interval_hours != app_state.pump_interval_hours
+        ):
+            app_state.pump_last_slot = slot_start(now_local, payload.interval_hours)
+        app_state.pump_schedule_enabled = payload.enabled
+        app_state.pump_interval_hours = payload.interval_hours
+        app_state.pump_run_seconds = payload.run_seconds
+        return _pump_status(now_local)
+
+
+@app.post("/api/pump/run", response_model=PumpStatus)
+def run_pump(payload: PumpRunIn, request: Request):
+    """Manual mode: run the pump once for `seconds`. Delivered on the
+    ESP32's next telemetry reply (up to ~20s away), then timed by the
+    firmware itself."""
+    with app_state.lock:
+        if app_state.pump_schedule_enabled:
+            raise HTTPException(status_code=409, detail="pump schedule is enabled")
+        _request_pump_run(payload.seconds, request.state.user.username, datetime.utcnow())
+        return _pump_status(_schedule_now())
+
+
+@app.get("/api/timezones")
+def get_timezones():
+    """Every timezone GrowProfileIn.schedule_timezone accepts, for the
+    Profile tab's dropdown."""
+    return sorted(zoneinfo.available_timezones())
 
 
 @app.post("/api/export")

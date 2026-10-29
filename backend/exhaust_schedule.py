@@ -14,18 +14,19 @@ three sources, in priority order (the caller in main.py applies them):
 from datetime import datetime
 
 
-def is_exhaust_on(now_utc: datetime, run_minutes: int, interval_minutes: int) -> bool:
-    """True if `now_utc` falls within the exhaust's ON portion of its duty
+def is_exhaust_on(now_local: datetime, run_minutes: int, interval_minutes: int) -> bool:
+    """True if `now_local` falls within the exhaust's ON portion of its duty
     cycle: on for the first `run_minutes` of every `interval_minutes`
     window, off for the rest, repeating continuously.
 
-    Anchored to UTC midnight, not to whenever the schedule was enabled -
+    Anchored to midnight in the schedule timezone (`now_local` is
+    main.py's _schedule_now()), not to whenever the schedule was enabled -
     a pure function of wall-clock time (not stored "next toggle" state),
     so it's correct immediately after a backend restart with no recovery
     logic needed, and needs no scheduler job of its own: every
     /api/telemetry cycle just recomputes it.
     """
-    minutes_since_midnight = now_utc.hour * 60 + now_utc.minute + now_utc.second / 60
+    minutes_since_midnight = now_local.hour * 60 + now_local.minute + now_local.second / 60
     phase = minutes_since_midnight % interval_minutes
     return phase < run_minutes
 

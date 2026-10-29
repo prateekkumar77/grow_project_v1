@@ -432,8 +432,9 @@
     border-color: var(--teal);
   }
 
-  /* exhaust-toggle: manual | schedule - same shape as light-toggle */
-  #exhaust-toggle[data-mode="schedule"] .segmented-thumb {
+  /* exhaust-toggle / pump-toggle: manual | schedule - same shape as light-toggle */
+  #exhaust-toggle[data-mode="schedule"] .segmented-thumb,
+  #pump-toggle[data-mode="schedule"] .segmented-thumb {
     transform: translateX(100%);
     background: linear-gradient(135deg, rgba(107, 180, 168, 0.55), rgba(107, 180, 168, 0.3));
     border-color: var(--teal);
@@ -656,7 +657,9 @@
     gap: 10px;
   }
 
-  .schedule-controls select {
+  .schedule-controls select,
+  .schedule-controls input[type="time"] {
+    color-scheme: dark;
     font-family: var(--font-mono);
     font-size: 13px;
     min-height: var(--tap);
@@ -668,7 +671,8 @@
     cursor: pointer;
   }
 
-  .schedule-controls select:focus { outline: 1px solid var(--border-strong); }
+  .schedule-controls select:focus,
+  .schedule-controls input[type="time"]:focus { outline: 1px solid var(--border-strong); }
 
   .profile-grid {
     display: grid;
@@ -678,7 +682,8 @@
 
   .profile-field { display: flex; flex-direction: column; gap: 6px; }
 
-  .profile-field input {
+  .profile-field input,
+  .profile-field select {
     font-family: var(--font-mono);
     font-size: 13px;
     min-height: var(--tap);
@@ -691,7 +696,8 @@
     color-scheme: dark;
   }
 
-  .profile-field input:focus { outline: 1px solid var(--border-strong); }
+  .profile-field input:focus,
+  .profile-field select:focus { outline: 1px solid var(--border-strong); }
 
   .tab-bar {
     display: flex;
@@ -992,11 +998,6 @@
           <button>off</button>
           <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
         </div>
-        <div class="relay" id="relay-pump" data-relay="pump">
-          <div class="label"><i data-lucide="droplet" width="14" height="14" stroke-width="1.6"></i>pump</div>
-          <button>off</button>
-          <div class="pending"><span class="blip"></span><span class="pending-text">pending&hellip;</span></div>
-        </div>
       </div>
     </div>
   </div>
@@ -1023,9 +1024,11 @@
 
     <div class="row" style="margin-top: 16px;">
       <div class="schedule-controls">
-        <label class="meta" for="light-on-hours">light on for</label>
-        <select id="light-on-hours"></select>
-        <span class="meta" id="light-off-hours">off for 6h</span>
+        <label class="meta" for="light-on-time">turn on at</label>
+        <input type="time" id="light-on-time" value="06:00">
+        <label class="meta" for="light-off-time">turn off at</label>
+        <input type="time" id="light-off-time" value="00:00">
+        <span class="meta" id="light-duration">on for 18h</span>
       </div>
     </div>
   </div>
@@ -1058,6 +1061,43 @@
         <select id="exhaust-interval-minutes"></select>
         <span class="meta" id="exhaust-off-label">off for 4m</span>
       </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <i data-lucide="droplets" width="14" height="14" stroke-width="1.8"></i>
+      pump
+      <span class="meta" style="margin-left: auto; font-weight: 400;">not affected by auto mode</span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-status">
+        <button class="control-btn" id="pump-run-btn">run</button>
+        <div class="control-pending" id="pump-pending"><span class="blip"></span><span id="pump-pending-text">pending&hellip;</span></div>
+      </div>
+
+      <div class="segmented" id="pump-toggle" data-mode="manual">
+        <span class="segmented-thumb"></span>
+        <button id="pump-btn-manual" class="active">manual</button>
+        <button id="pump-btn-schedule">schedule</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 16px;">
+      <div class="schedule-controls" id="pump-manual-controls">
+        <label class="meta" for="pump-manual-seconds">run for</label>
+        <select id="pump-manual-seconds"></select>
+      </div>
+      <div class="schedule-controls" id="pump-schedule-controls" style="display: none;">
+        <label class="meta" for="pump-interval-hours">every</label>
+        <select id="pump-interval-hours"></select>
+        <label class="meta" for="pump-run-seconds">for</label>
+        <select id="pump-run-seconds"></select>
+      </div>
+    </div>
+    <div class="row">
+      <span class="meta" id="pump-meta">&ndash;&ndash;</span>
     </div>
   </div>
 
@@ -1170,7 +1210,7 @@
     <div class="section-title">
       <i data-lucide="sliders-horizontal" width="14" height="14" stroke-width="1.8"></i>
       grow profile
-      <span class="meta" style="margin-left: auto; font-weight: 400;">cosmetic only &mdash; doesn't feed the decision engine</span>
+      <span class="meta" style="margin-left: auto; font-weight: 400;">timezone sets when schedules run; the rest is cosmetic</span>
     </div>
     <div class="profile-grid">
       <div class="profile-field">
@@ -1184,6 +1224,10 @@
       <div class="profile-field">
         <label class="meta" for="profile-start-date">grow start date</label>
         <input type="date" id="profile-start-date">
+      </div>
+      <div class="profile-field">
+        <label class="meta" for="profile-timezone">schedule timezone (light, exhaust, pump)</label>
+        <select id="profile-timezone"><option value="UTC">UTC</option></select>
       </div>
     </div>
   </div>
@@ -1228,18 +1272,10 @@
 
   <div class="panel">
     <div class="section-title">
-      <i data-lucide="sprout" width="14" height="14" stroke-width="1.6"></i>
-      soil moisture &amp; safety
+      <i data-lucide="shield-alert" width="14" height="14" stroke-width="1.8"></i>
+      safety
     </div>
     <div class="profile-grid">
-      <div class="profile-field">
-        <label class="meta" for="profile-soil-low">pump on at or below (%)</label>
-        <input type="number" id="profile-soil-low" min="0" max="100" step="1">
-      </div>
-      <div class="profile-field">
-        <label class="meta" for="profile-soil-hysteresis">pump off this many points above that (%)</label>
-        <input type="number" id="profile-soil-hysteresis" min="0.1" max="50" step="0.5">
-      </div>
       <div class="profile-field">
         <label class="meta" for="profile-alert-temp">force fan+AC on at or above (&deg;C)</label>
         <input type="number" id="profile-alert-temp" min="-10" max="60" step="0.5">
@@ -1286,10 +1322,12 @@
 <script>
 (function () {
   var POLL_MS = 5000;
-  var relays = ["fan", "pump"];
+  var relays = ["fan"];
   var currentMode = "auto";
   var currentLightScheduleEnabled = false;
   var currentExhaustScheduleEnabled = false;
+  var currentPumpScheduleEnabled = false;
+  var scheduleTimezone = "UTC";
   var currentUserRole = null;
   var lastValues = { temp: null, humidity: null, soil: null, current: null, voltage: null, power: null };
 
@@ -1348,13 +1386,12 @@
     "profile-name": { api: "grow_profile_name", type: "string" },
     "profile-tent-size": { api: "tent_size_m2", type: "string" },
     "profile-start-date": { api: "start_date", type: "string" },
+    "profile-timezone": { api: "schedule_timezone", type: "string" },
     "profile-humidity-high": { api: "humidity_high_threshold", type: "number" },
     "profile-humidity-low": { api: "humidity_low_threshold", type: "number" },
     "profile-temp-fan": { api: "temp_fan_threshold_c", type: "number" },
     "profile-temp-ac": { api: "temp_ac_threshold_c", type: "number" },
     "profile-temp-low": { api: "temp_low_threshold_c", type: "number" },
-    "profile-soil-low": { api: "soil_moisture_low_threshold", type: "number" },
-    "profile-soil-hysteresis": { api: "soil_moisture_hysteresis", type: "number" },
     "profile-alert-temp": { api: "alert_temp_c", type: "number" },
     "alert-mode-toggle": { api: "telegram_alert_mode", type: "segmented" },
   };
@@ -1461,18 +1498,6 @@
 
       var pending = status.reported_relay_state != null && commanded !== reported;
       container.classList.toggle("pending", pending);
-
-      // Pump has its own firmware-side safety cap/cooldown, which can
-      // silently refuse a commanded "on" for a while - distinguish that
-      // from the generic, usually-resolves-in-one-cycle "pending" so it
-      // doesn't look like the dashboard is stuck.
-      if (name === "pump") {
-        var pendingText = container.querySelector(".pending-text");
-        var cooldownS = status.pump_cooldown_remaining_s || 0;
-        pendingText.textContent = pending && cooldownS > 0
-          ? "cooldown ≈" + Math.ceil(cooldownS) + "s"
-          : "pending…";
-      }
     });
 
     showBanner("banner-stale", !!status.offline);
@@ -1481,6 +1506,7 @@
 
     applyLightStatus(status.light);
     applyExhaustStatus(status.exhaust);
+    applyPumpStatus(status.pump);
     applyAcAndHaStatus(status);
     applyActivity(status.activity);
     renderLightPie(status.light);
@@ -1557,12 +1583,61 @@
     var pending = light.reported != null && light.commanded !== light.reported;
     document.getElementById("light-pending").classList.toggle("show", pending);
 
-    var select = document.getElementById("light-on-hours");
-    if (document.activeElement !== select) {
-      select.value = String(light.on_hours);
-    }
-    select.disabled = currentUserRole === "viewer";
-    document.getElementById("light-off-hours").textContent = "off for " + light.off_hours + "h";
+    ["light-on-time", "light-off-time"].forEach(function (id) {
+      var input = document.getElementById(id);
+      var value = (id === "light-on-time" ? light.on_time : light.off_time).slice(0, 5);
+      if (document.activeElement !== input) input.value = value;
+      input.disabled = currentUserRole === "viewer";
+    });
+    document.getElementById("light-duration").textContent =
+      "on for " + fmtHours(light.on_hours) + " (" + scheduleTimezone + ")";
+  }
+
+  // 16 -> "16h", 16.5 -> "16h 30m", 0.5 -> "30m".
+  function fmtHours(hours) {
+    var totalMinutes = Math.round(hours * 60);
+    var h = Math.floor(totalMinutes / 60);
+    var m = totalMinutes % 60;
+    if (!m) return h + "h";
+    return h ? h + "h " + m + "m" : m + "m";
+  }
+
+  function applyPumpStatus(pump) {
+    if (!pump) return;
+    currentPumpScheduleEnabled = pump.schedule_enabled;
+    var viewer = currentUserRole === "viewer";
+
+    document.getElementById("pump-toggle").dataset.mode = pump.schedule_enabled ? "schedule" : "manual";
+    document.getElementById("pump-btn-manual").classList.toggle("active", !pump.schedule_enabled);
+    document.getElementById("pump-btn-schedule").classList.toggle("active", pump.schedule_enabled);
+    document.getElementById("pump-manual-controls").style.display = pump.schedule_enabled ? "none" : "";
+    document.getElementById("pump-schedule-controls").style.display = pump.schedule_enabled ? "" : "none";
+
+    var btn = document.getElementById("pump-run-btn");
+    btn.textContent = pump.reported ? "running" : "run";
+    btn.classList.toggle("on", !!pump.reported);
+    btn.classList.toggle("enabled", !pump.schedule_enabled && !viewer);
+    btn.disabled = pump.schedule_enabled || viewer;
+
+    // A requested run waits for the ESP32's next check-in (up to ~20s);
+    // while the firmware's post-cap cooldown is active it won't run at all.
+    var cooldownS = pump.cooldown_remaining_s || 0;
+    document.getElementById("pump-pending").classList.toggle("show", pump.run_pending || cooldownS > 0);
+    document.getElementById("pump-pending-text").textContent = cooldownS > 0
+      ? "cooldown ≈" + Math.ceil(cooldownS) + "s"
+      : "pending…";
+
+    [["pump-interval-hours", pump.interval_hours], ["pump-run-seconds", pump.run_seconds]].forEach(function (pair) {
+      var select = document.getElementById(pair[0]);
+      if (document.activeElement !== select) select.value = String(pair[1]);
+      select.disabled = viewer;
+    });
+    document.getElementById("pump-manual-seconds").disabled = viewer;
+
+    var parts = [];
+    if (pump.next_run_at) parts.push("next run " + pump.next_run_at.slice(11, 16) + " (" + scheduleTimezone + ")");
+    parts.push(pump.last_run_at ? "last run " + new Date(pump.last_run_at + "Z").toLocaleString() : "no runs yet");
+    document.getElementById("pump-meta").textContent = parts.join(" · ");
   }
 
   function applyExhaustStatus(exhaust) {
@@ -1621,7 +1696,8 @@
           // everything else is re-guarded on every applyStatus/applyLightStatus/
           // applyExhaustStatus call so it can't be re-enabled by a later poll.
           ["btn-auto", "btn-manual", "light-btn-manual", "light-btn-schedule",
-            "exhaust-btn-manual", "exhaust-btn-schedule", "export-btn", "activity-export-btn",
+            "exhaust-btn-manual", "exhaust-btn-schedule", "pump-btn-manual", "pump-btn-schedule",
+            "export-btn", "activity-export-btn",
             "profile-save-btn"].concat(Object.keys(PROFILE_FIELDS)).forEach(function (id) {
             document.getElementById(id).disabled = true;
           });
@@ -1649,6 +1725,7 @@
   }
 
   function applyProfileLabel(profile) {
+    scheduleTimezone = profile.schedule_timezone || "UTC";
     var label = profile.grow_profile_name || "Custom grow profile";
     if (profile.tent_size_m2) label += " · " + profile.tent_size_m2 + "m²";
     var dayNumber = growDayNumber(profile.start_date);
@@ -1674,8 +1751,30 @@
     });
   }
 
+  // Fills the timezone dropdown from the backend's own zoneinfo list, so
+  // it only ever offers zones the profile validator accepts. Resolves
+  // either way - on failure the dropdown keeps its single UTC option.
+  function loadTimezones() {
+    return fetch("/api/timezones")
+      .then(function (r) {
+        if (!r.ok) throw new Error("bad status " + r.status);
+        return r.json();
+      })
+      .then(function (zones) {
+        var select = document.getElementById("profile-timezone");
+        select.innerHTML = "";
+        zones.forEach(function (zone) {
+          var opt = document.createElement("option");
+          opt.value = zone;
+          opt.textContent = zone;
+          select.appendChild(opt);
+        });
+      })
+      .catch(function () {});
+  }
+
   function loadProfile() {
-    fetch("/api/profile")
+    return fetch("/api/profile")
       .then(function (r) {
         if (!r.ok) throw new Error("bad status " + r.status);
         return r.json();
@@ -1746,23 +1845,18 @@
     }).then(poll);
   });
 
-  (function populateLightHourOptions() {
-    var select = document.getElementById("light-on-hours");
-    for (var h = 1; h <= 24; h++) {
-      var opt = document.createElement("option");
-      opt.value = String(h);
-      opt.textContent = h + "h";
-      select.appendChild(opt);
-    }
-  })();
-
   function postLightSchedule(enabled) {
-    var onHours = parseInt(document.getElementById("light-on-hours").value, 10);
+    var onTime = document.getElementById("light-on-time").value;
+    var offTime = document.getElementById("light-off-time").value;
+    if (!onTime || !offTime) return;
     fetch("/api/light/schedule", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: enabled, on_hours: onHours }),
-    }).then(poll);
+      body: JSON.stringify({ enabled: enabled, on_time: onTime, off_time: offTime }),
+    }).then(function (res) {
+      if (res.status === 422) alert("Turn on and turn off times must be different.");
+      poll();
+    });
   }
 
   document.getElementById("light-manual-btn").addEventListener("click", function (e) {
@@ -1783,8 +1877,63 @@
     postLightSchedule(true);
   });
 
-  document.getElementById("light-on-hours").addEventListener("change", function () {
-    postLightSchedule(currentLightScheduleEnabled);
+  ["light-on-time", "light-off-time"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", function () {
+      postLightSchedule(currentLightScheduleEnabled);
+    });
+  });
+
+  (function populatePumpOptions() {
+    function fill(id, values, suffix, selected) {
+      var select = document.getElementById(id);
+      values.forEach(function (v) {
+        var opt = document.createElement("option");
+        opt.value = String(v);
+        opt.textContent = v + suffix;
+        select.appendChild(opt);
+      });
+      select.value = String(selected);
+    }
+    var seconds = [];
+    for (var s = 1; s <= 30; s++) seconds.push(s);
+    fill("pump-manual-seconds", seconds, "s", 3);
+    fill("pump-run-seconds", seconds, "s", 3);
+    fill("pump-interval-hours", [1, 2, 3, 4, 6, 8, 12, 24], "h", 12);
+  })();
+
+  function postPumpSchedule(enabled) {
+    fetch("/api/pump/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: enabled,
+        interval_hours: parseInt(document.getElementById("pump-interval-hours").value, 10),
+        run_seconds: parseInt(document.getElementById("pump-run-seconds").value, 10),
+      }),
+    }).then(poll);
+  }
+
+  document.getElementById("pump-btn-manual").addEventListener("click", function () {
+    postPumpSchedule(false);
+  });
+
+  document.getElementById("pump-btn-schedule").addEventListener("click", function () {
+    postPumpSchedule(true);
+  });
+
+  ["pump-interval-hours", "pump-run-seconds"].forEach(function (id) {
+    document.getElementById(id).addEventListener("change", function () {
+      postPumpSchedule(currentPumpScheduleEnabled);
+    });
+  });
+
+  document.getElementById("pump-run-btn").addEventListener("click", function () {
+    if (currentPumpScheduleEnabled) return;
+    fetch("/api/pump/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: parseInt(document.getElementById("pump-manual-seconds").value, 10) }),
+    }).then(poll);
   });
 
   (function populateExhaustMinuteOptions() {
@@ -2057,8 +2206,8 @@
       data = [light.on_hours, light.off_hours];
       colors = [COLOR_ON, COLOR_OFF];
       captionHtml =
-        '<div class="row-item"><span class="swatch" style="background:' + COLOR_ON + '"></span>on for ' + light.on_hours + 'h</div>' +
-        '<div class="row-item"><span class="swatch" style="background:' + COLOR_OFF + '"></span>off for ' + light.off_hours + 'h</div>';
+        '<div class="row-item"><span class="swatch" style="background:' + COLOR_ON + '"></span>on for ' + fmtHours(light.on_hours) + '</div>' +
+        '<div class="row-item"><span class="swatch" style="background:' + COLOR_OFF + '"></span>off for ' + fmtHours(light.off_hours) + '</div>';
     } else {
       var manualOn = !!light.commanded;
       var manualColor = manualOn ? COLOR_ON : COLOR_OFF;
@@ -2260,7 +2409,7 @@
   if (window.lucide) lucide.createIcons();
 
   loadRole();
-  loadProfile();
+  loadTimezones().then(loadProfile);
   poll();
   setInterval(poll, POLL_MS);
 })();

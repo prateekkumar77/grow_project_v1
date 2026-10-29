@@ -49,24 +49,6 @@ def test_low_temp_turns_ac_off_and_fan_on():
     assert result.fan is True
 
 
-def test_low_soil_moisture_triggers_pump():
-    previous = RelayState(fan=False, ac=False, pump=False)
-    reading = make_reading(temp_c=24.0, humidity=50, soil_moisture=20)
-
-    result = decide_relay_state(reading, previous, PROFILE)
-
-    assert result.pump is True
-
-
-def test_soil_moisture_above_hysteresis_band_turns_pump_off():
-    previous = RelayState(fan=False, ac=False, pump=True)
-    reading = make_reading(temp_c=24.0, humidity=50, soil_moisture=80)
-
-    result = decide_relay_state(reading, previous, PROFILE)
-
-    assert result.pump is False
-
-
 def test_low_humidity_turns_ac_off_and_fan_on():
     previous = RelayState(fan=False, ac=True, pump=False)
     reading = make_reading(temp_c=24.0, humidity=25, soil_moisture=60)
@@ -84,3 +66,12 @@ def test_high_humidity_turns_ac_on():
     result = decide_relay_state(reading, previous, PROFILE)
 
     assert result.ac is True
+
+
+def test_pump_is_never_driven_by_soil_moisture():
+    previous = RelayState(fan=False, ac=False, pump=False)
+    reading = make_reading(temp_c=24.0, humidity=50, soil_moisture=5)
+
+    result = decide_relay_state(reading, previous, PROFILE)
+
+    assert result.pump is False

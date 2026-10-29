@@ -5,13 +5,14 @@ ESP32 never makes environmental decisions itself — it only reports sensor
 readings and its actual relay states, and applies whatever the backend
 tells it to do.
 
-Sections up through "Manual mode" cover **fan, AC, and pump** — the three
-outputs `decide_relay_state()` decides, only in **auto** mode. Fan and
-pump are physical ESP32 relays; AC is an IR transmitter instead (see
-below) — all three are ESP32-driven either way. **Light and exhaust** run
-on their own schedules and are covered separately, further down — neither
-is ever touched by `decide_relay_state()`, auto/manual mode, or any
-sensor reading.
+Sections up through "Manual mode" cover **fan and AC** — the two
+outputs `decide_relay_state()` decides, only in **auto** mode. Fan is a
+physical ESP32 relay; AC is an IR transmitter instead (see below) — both
+are ESP32-driven either way. **Light, exhaust and pump** run on their own
+schedules (or manual control) and are covered separately, further down —
+none of them is ever decided by `decide_relay_state()` or any sensor
+reading. All three schedules run in the grow profile's
+`schedule_timezone` (IANA name, default `UTC`).
 
 ## What gets measured
 
@@ -53,27 +54,11 @@ All absolute tent temperature, not a rise relative to anything:
   low-humidity rule — pulling in comparatively warmer room air rather
   than cooling a tent that's already too cold.
 
-## Soil moisture / watering
+## Soil moisture
 
-- **Soil moisture at or below `SOIL_MOISTURE_LOW_THRESHOLD`** (default 35%):
-  command the **pump on**.
-- **Soil moisture at or above that threshold plus `SOIL_MOISTURE_HYSTERESIS`**
-  (default 5 points, i.e. 40%): command the pump off.
-- In between those two numbers, the pump holds whatever it was already
-  doing — this hysteresis band stops the pump from rapidly clicking on/off
-  right at the boundary.
-- The backend does not need to worry about spamming "pump on" every cycle —
-  the ESP32 itself only ever *starts* the pump timer on an off→on
-  transition, and independently enforces a **hard 30 second max run** with
-  a **60 second cooldown** afterwards, regardless of what the backend asks
-  for. That's a firmware safety limit, not a decision the backend makes.
-- While that cooldown is active, the firmware silently refuses a commanded
-  pump-on — it doesn't turn on, and it doesn't tell the backend *why* it
-  didn't, just that it's still off. The dashboard would otherwise show a
-  generic, seemingly-stuck "pending" for as long as the cooldown lasts, so
-  the firmware also reports how many seconds are left in it
-  (`pump_cooldown_remaining_s` in the telemetry payload), and the dashboard
-  shows "cooldown ~Xs" instead while it's nonzero.
+The soil moisture reading is recorded and shown on the dashboard, but it
+no longer drives anything — the pump has its own manual/schedule control
+(see "Pump" below).
 
 ## AC: an IR transmitter, not a relay
 
@@ -134,22 +119,7 @@ When the dashboard puts the system in **manual**, the decision engine is
 not consulted at all. Relay commands come only from the last thing a human
 clicked on the dashboard (`POST /api/relay`). The other thing that can
 still override a manual command is the ESP32's own local safety logic
-(pump cap/cooldown, and the offline emergency-temperature floor).
-
-**Pump is the one exception.** Manual mode has no concept of "re-arming" a
-relay — whatever was last clicked just gets resent every cycle, forever,
-until clicked again. That's fine for fan/ac/light/exhaust, but not for the
-pump: the firmware's 30s-run/60s-cooldown safety cap (below) can force it
-off without telling the backend why, so the backend would otherwise keep
-resending the same stale "on" command and the pump would settle into a
-perpetual 30-seconds-on/60-seconds-off loop with no way to stop it short
-of noticing and clicking "off." So in manual mode only, the moment the
-backend learns (via `pump_cooldown_remaining_s`) that a cap cutoff just
-happened, it cancels the standing "on" command — turning the pump back on
-after that always takes a fresh `POST /api/relay`, never an automatic
-resumption. **Auto mode is unaffected**: its decision engine already
-re-evaluates the pump from live soil moisture every cycle, so there's no
-stale command to begin with.
+(the offline emergency-temperature floor).
 
 Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
 (default 30) of no dashboard activity, so a manual session can't be
@@ -157,7 +127,7 @@ forgotten and left uncontrolled indefinitely.
 
 ## Light: its own schedule, independent of mode
 
-The grow light has its own ESP32 relay, just like fan and pump — but it is
+The grow light has its own ESP32 relay, just like the fan — but it is
 **never** decided by `decide_relay_state()` and is completely unaffected
 by whether the system is in auto or manual mode. It has exactly two states
 of its own, controlled from the dashboard:
@@ -165,18 +135,19 @@ of its own, controlled from the dashboard:
 - **Schedule on**: the light follows a daily duty cycle, computed fresh
   every telemetry cycle from the current time — there's no stored "next
   toggle" timer to lose track of, so it's correct immediately even right
-  after a backend restart. You set how many hours per day it should be on
-  (`on_hours`, 1–24, picked from the dashboard's dropdown); off-hours is
-  always `24 - on_hours`, computed automatically. The cycle is anchored to
-  **00:00 UTC** every day: light on hours 1 (say, `on_hours = 18`) means on
-  from 00:00 to 18:00 UTC, then off from 18:00 to 24:00, repeating daily.
+  after a backend restart. You set a **turn-on time** and a **turn-off
+  time** (`on_time`/`off_time`, HH:MM from the dashboard's time pickers)
+  in the schedule timezone: on 06:00 / off 00:00 means on from 06:00 to
+  midnight. An off time earlier than the on time wraps past midnight
+  (on 18:00 / off 06:00 is on overnight); equal times are rejected
+  (`422`).
 - **Schedule off**: the light is under direct manual control from the
   dashboard (`POST /api/light/manual`) — it just holds whatever it was
   last set to, with no automatic behavior at all.
 
 The dashboard's schedule toggle is the master switch between these two
 states; attempting a manual command while the schedule is on is rejected
-(`409`), the same way `/api/relay` rejects a manual fan/ac/pump command
+(`409`), the same way `/api/relay` rejects a manual fan/ac command
 outside manual mode.
 
 There's no offline-specific logic for the light beyond what every other
@@ -191,7 +162,8 @@ The exhaust fan has its own ESP32 relay too, with a schedule/manual master
 switch like the light — but the schedule *shape* is different, and with
 the schedule off it follows the AC in auto mode. Rather than one on/off window per day, it's
 a repeating **duty cycle**: on for `run_minutes`, then off for the rest of
-every `interval_minutes` window, cycling continuously (`exhaust_schedule.
+every `interval_minutes` window, anchored to midnight in the schedule
+timezone, cycling continuously (`exhaust_schedule.
 is_exhaust_on()`). Both `run_minutes` and `interval_minutes` are 1-60,
 picked from dashboard dropdowns, and the API rejects `run_minutes` greater
 than `interval_minutes` (`422`) since running longer than the cycle itself
@@ -214,15 +186,48 @@ while the exhaust is following the AC. `decide_relay_state()` itself still
 never sets the exhaust; it only reaches it indirectly, through the AC
 decision it makes in auto mode.
 
+## Pump: manual timed runs or an interval schedule
+
+The pump is never part of auto mode or `decide_relay_state()`, and soil
+moisture never turns it on. Two states, switched from the dashboard:
+
+- **Manual**: a **run** button plus a seconds dropdown (1-30) —
+  `POST /api/pump/run` requests one run of that length.
+- **Schedule**: "every N hours for N seconds" — interval 1, 2, 3, 4, 6, 8,
+  12 or 24 hours, run 1-30 seconds. Slots are anchored to midnight in the
+  schedule timezone (`pump_schedule.slot_start()`), so every 12h runs at
+  00:00 and 12:00; one run is requested per slot. Enabling the schedule
+  or changing the interval marks the current slot as done, so the first
+  run is at the next boundary rather than immediately.
+  `POST /api/pump/run` is rejected with `409` while it's on.
+
+The ESP32 only polls every ~20s, too coarse to time a 3s run from the
+backend, so each run is a one-time request the firmware times itself:
+
+- While a run is pending, every telemetry reply carries
+  `pump_run: {id, seconds}`. The firmware starts the pump for `seconds`
+  the first time it sees a new `id`, and reports it back as
+  `pump_last_run_id`; once that matches, the backend stops sending it.
+  A repeated reply therefore never re-runs, and ids start from the
+  current Unix time so a backend restart can't reuse one.
+- A request not picked up within `PUMP_RUN_REQUEST_TTL_SECONDS` (default
+  300) is dropped and logged, so an offline ESP32 doesn't water hours late.
+- The run finishes on the ESP32's own timer even if WiFi drops mid-run.
+  `relay_state.pump` in the reply is always false and ignored.
+
 ## What the firmware does entirely on its own
 
 This is the *only* logic that lives on the ESP32, and it runs regardless of
 mode or what the backend says, because it has to survive a dead network
 connection:
 
+- **Pump runs**: time each requested run itself (above), clamped to
+  `MAX_PUMP_RUN_SECONDS`.
 - **Pump cap**: force the pump off after `MAX_PUMP_RUN_SECONDS` (default
   30s) of continuous running, and refuse to turn it back on for
-  `PUMP_COOLDOWN_SECONDS` (default 60s) afterwards.
+  `PUMP_COOLDOWN_SECONDS` (default 60s) afterwards — a backstop; a normal
+  timed run ending doesn't start a cooldown. The firmware still reports
+  `pump_cooldown_remaining_s`, shown on the dashboard's pump panel.
 - **On any failed telemetry POST**: force the pump off immediately and
   unconditionally.
 - **While offline, if temperature reaches `EMERGENCY_TEMP_C`** (default
@@ -232,6 +237,6 @@ connection:
   is watching. **AC gets no such floor** - not a hardware limitation
   anymore (it has its own IR actuation path now, see above), just not
   wired into this specific failsafe; while offline it holds whatever it
-  was last set to, same as fan/pump/light do for everything this floor
+  was last set to, same as fan/light do for everything this floor
   doesn't cover.
 - Everything else holds its last-commanded state while offline.

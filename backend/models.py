@@ -1,8 +1,11 @@
 """SQLModel tables and shared pydantic schemas used across the backend."""
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field as PydanticField, model_validator
+from pydantic import BaseModel, Field as PydanticField, field_validator, model_validator
+
+from pump_schedule import INTERVAL_HOURS_OPTIONS
 from sqlmodel import Field, SQLModel
 
 
@@ -44,15 +47,30 @@ class TelemetryIn(BaseModel):
     humidity: float
     soil_moisture: float
     relay_state: RelayState
-    # Seconds left before the firmware will honor a commanded pump-on
-    # again, or 0 if no cooldown is active. Defaults to 0 so older
-    # firmware that doesn't send this field still validates.
+    # Seconds left before the firmware will honor a pump run again, or 0
+    # if no cooldown is active. Defaults to 0 so older firmware that
+    # doesn't send this field still validates.
     pump_cooldown_remaining_s: float = 0.0
+    # Id of the last pump run request the firmware acted on - once it
+    # matches the pending request's id, the backend stops re-sending it.
+    pump_last_run_id: int = 0
+
+
+class PumpRunCommand(BaseModel):
+    """A one-time "run the pump for N seconds" request. Re-sent in every
+    telemetry reply until the firmware reports this id back; the firmware
+    acts on each id only once and times the run itself."""
+
+    id: int
+    seconds: int
 
 
 class TelemetryOut(BaseModel):
     mode: Literal["auto", "manual"]
+    # relay_state.pump is always False and ignored by the firmware - the
+    # pump only runs via pump_run.
     relay_state: RelayState
+    pump_run: Optional[PumpRunCommand] = None
 
 
 class ModeIn(BaseModel):
@@ -60,13 +78,22 @@ class ModeIn(BaseModel):
 
 
 class RelayIn(BaseModel):
-    relay: Literal["fan", "ac", "pump"]
+    relay: Literal["fan", "ac"]
     state: bool
 
 
 class LightScheduleIn(BaseModel):
     enabled: bool
-    on_hours: int = PydanticField(ge=1, le=24)
+    # Wall-clock times in the grow profile's schedule_timezone. off_time
+    # earlier than on_time means the window wraps past midnight.
+    on_time: time
+    off_time: time
+
+    @model_validator(mode="after")
+    def _times_differ(self) -> "LightScheduleIn":
+        if self.on_time.replace(second=0, microsecond=0) == self.off_time.replace(second=0, microsecond=0):
+            raise ValueError("on_time and off_time must differ")
+        return self
 
 
 class LightManualIn(BaseModel):
@@ -75,8 +102,11 @@ class LightManualIn(BaseModel):
 
 class LightStatus(BaseModel):
     schedule_enabled: bool
-    on_hours: int
-    off_hours: int
+    on_time: time
+    off_time: time
+    # Derived from on_time/off_time, for the history tab's pie chart.
+    on_hours: float
+    off_hours: float
     commanded: bool
     reported: Optional[bool] = None
 
@@ -91,6 +121,39 @@ class ExhaustScheduleIn(BaseModel):
         if self.run_minutes > self.interval_minutes:
             raise ValueError("run_minutes cannot be greater than interval_minutes")
         return self
+
+
+class PumpScheduleIn(BaseModel):
+    enabled: bool
+    interval_hours: int
+    run_seconds: int = PydanticField(ge=1, le=30)
+
+    @field_validator("interval_hours")
+    @classmethod
+    def _allowed_interval(cls, value: int) -> int:
+        if value not in INTERVAL_HOURS_OPTIONS:
+            raise ValueError(f"interval_hours must be one of {INTERVAL_HOURS_OPTIONS}")
+        return value
+
+
+class PumpRunIn(BaseModel):
+    # 30s is the firmware's own max-run safety cap.
+    seconds: int = PydanticField(ge=1, le=30)
+
+
+class PumpStatus(BaseModel):
+    schedule_enabled: bool
+    interval_hours: int
+    run_seconds: int
+    # Naive wall-clock time in the schedule timezone; None when the
+    # schedule is off.
+    next_run_at: Optional[datetime] = None
+    # UTC, when the firmware last acknowledged a run request.
+    last_run_at: Optional[datetime] = None
+    # A run was requested but the firmware hasn't picked it up yet.
+    run_pending: bool = False
+    reported: Optional[bool] = None
+    cooldown_remaining_s: float = 0.0
 
 
 class ExhaustManualIn(BaseModel):
@@ -115,8 +178,6 @@ class GrowProfileIn(BaseModel):
     temp_fan_threshold_c: float = PydanticField(ge=-10, le=50)
     temp_ac_threshold_c: float = PydanticField(ge=-10, le=50)
     temp_low_threshold_c: float = PydanticField(ge=-10, le=50)
-    soil_moisture_low_threshold: float = PydanticField(ge=0, le=100)
-    soil_moisture_hysteresis: float = PydanticField(gt=0, le=50)
     alert_temp_c: float = PydanticField(ge=-10, le=60)
     # "main" (default): only the emergency-temperature Telegram alert, rate
     # limited by ALERT_NOTIFY_COOLDOWN_MINUTES, unchanged from before this
@@ -126,12 +187,25 @@ class GrowProfileIn(BaseModel):
     # (relay toggles, mode/schedule changes, profile saves, exports, ...),
     # uncapped - see main.py's activity_log.on_record wiring.
     telegram_alert_mode: Literal["main", "all"] = "main"
+    # IANA timezone (e.g. "Asia/Kolkata") the light, exhaust and pump
+    # schedules run in. Defaults to UTC, which keeps old saved profiles
+    # valid and matches how schedules behaved before this field existed.
+    schedule_timezone: str = "UTC"
     grow_profile_name: str = PydanticField(min_length=1, max_length=100)
     tent_size_m2: Optional[str] = PydanticField(default=None, max_length=50)
     # Purely cosmetic, like grow_profile_name/tent_size_m2 - the dashboard
     # derives a "day N" counter from it, but it's never read by the
     # decision engine.
     start_date: Optional[date] = None
+
+    @field_validator("schedule_timezone")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown timezone: {value}")
+        return value
 
     @model_validator(mode="after")
     def _thresholds_make_sense(self) -> "GrowProfileIn":
@@ -190,14 +264,11 @@ class StatusOut(BaseModel):
     exhaust: ExhaustStatus
     ha: HaStatus
     ha_power: HaPowerStatus
+    pump: PumpStatus
     # Newest first, capped at activity_log.MAX_ENTRIES - piggybacks on the
     # same 5s status poll rather than its own endpoint, same as everything
     # else the dashboard shows.
     activity: list[ActivityEntryOut]
-    # 0 unless the firmware is currently refusing a commanded pump-on due to
-    # its own post-cap cooldown - lets the dashboard show "cooldown" instead
-    # of a generic, indefinitely-stuck-looking "pending" for the pump.
-    pump_cooldown_remaining_s: float = 0.0
 
 
 # --- persistence --------------------------------------------------------------------
@@ -253,10 +324,14 @@ class GrowProfileRow(SQLModel, table=True):
     temp_fan_threshold_c: float
     temp_ac_threshold_c: float
     temp_low_threshold_c: float
-    soil_moisture_low_threshold: float
-    soil_moisture_hysteresis: float
+    # No longer part of the grow profile (the pump isn't driven by soil
+    # moisture anymore) - kept only because already-deployed databases have
+    # these as NOT NULL columns, so inserts still need a value.
+    soil_moisture_low_threshold: float = 35.0
+    soil_moisture_hysteresis: float = 5.0
     alert_temp_c: float
     telegram_alert_mode: str = "main"
+    schedule_timezone: str = "UTC"
     grow_profile_name: str
     tent_size_m2: Optional[str] = None
     start_date: Optional[date] = None

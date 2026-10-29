@@ -22,15 +22,18 @@ bool network_try_connect() {
 
 bool network_post_telemetry(const Reading& reading, const RelayState& actual,
                              bool acActual, float pumpCooldownRemainingS,
+                             uint32_t pumpLastRunId,
                              String& outMode, RelayState& outCommanded,
-                             bool& outAcCommanded) {
+                             bool& outAcCommanded, uint32_t& outPumpRunId,
+                             uint16_t& outPumpRunSeconds) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  StaticJsonDocument<256> req;
+  StaticJsonDocument<384> req;
   req["temp_c"] = reading.temp_c;
   req["humidity"] = reading.humidity;
   req["soil_moisture"] = reading.soil_moisture;
   req["pump_cooldown_remaining_s"] = pumpCooldownRemainingS;
+  req["pump_last_run_id"] = pumpLastRunId;
   JsonObject relayState = req.createNestedObject("relay_state");
   relayState["fan"] = actual.fan;
   relayState["exhaust"] = actual.exhaust;
@@ -56,7 +59,7 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   String responseBody = http.getString();
   http.end();
 
-  StaticJsonDocument<256> res;
+  StaticJsonDocument<384> res;
   DeserializationError err = deserializeJson(res, responseBody);
   if (err) return false;
 
@@ -66,9 +69,13 @@ bool network_post_telemetry(const Reading& reading, const RelayState& actual,
   JsonObject cmd = res["relay_state"];
   outCommanded.fan = cmd["fan"] | false;
   outCommanded.exhaust = cmd["exhaust"] | false;
-  outCommanded.pump = cmd["pump"] | false;
   outCommanded.light = cmd["light"] | false;
   outAcCommanded = cmd["ac"] | false;
+
+  // Optional, present only while the backend has an unacknowledged run.
+  JsonObject pumpRun = res["pump_run"];
+  outPumpRunId = pumpRun.isNull() ? 0 : (uint32_t)(pumpRun["id"] | 0UL);
+  outPumpRunSeconds = pumpRun.isNull() ? 0 : (uint16_t)(pumpRun["seconds"] | 0);
 
   return true;
 }

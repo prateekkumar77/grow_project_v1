@@ -33,16 +33,16 @@ calls made where the original brief left something unspecified.
 
 The decision engine compares live readings directly against fixed
 grow-profile thresholds — no rolling baseline, no history lookup, so the
-same reading always produces the same decision. This governs **fan, AC,
-and pump**, every cycle, in **auto** mode only. **Light** runs on its own
+same reading always produces the same decision. This governs **fan and
+AC**, every cycle, in **auto** mode only. The **pump** is never part of
+it (see Pump below). **Light** runs on its own
 independent schedule (below) and is never touched by it. **Exhaust** runs
 on its own schedule when that's enabled; otherwise, in auto mode it
-mirrors the AC (on when AC is on, off when AC is off). **Manual** mode bypasses the decision engine for fan/AC/pump
+mirrors the AC (on when AC is on, off when AC is off). **Manual** mode bypasses the decision engine for fan/AC
 entirely — relay state is whatever was last commanded from the dashboard
 — and auto-reverts to auto after a period of inactivity.
 
-Full rule-by-rule behavior (humidity, temperature, soil moisture, pump
-safety): [`docs/automation-logic.md`](docs/automation-logic.md).
+Full rule-by-rule behavior (humidity, temperature, pump safety): [`docs/automation-logic.md`](docs/automation-logic.md).
 
 ### Grow profile
 
@@ -53,7 +53,6 @@ Every threshold is a named, editable value, not a hardcoded number:
 | `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when AC-on / fan-on-AC-off kicks in for humidity |
 | `TEMP_FAN_THRESHOLD_C` / `TEMP_AC_THRESHOLD_C` | absolute °C at which fan, then AC, engage |
 | `TEMP_LOW_THRESHOLD_C` | absolute °C below which AC turns off and fan pulls in warmer room air |
-| `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
 | `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
 
 Retune these from the dashboard's **profile** tab at any time — no
@@ -66,14 +65,24 @@ purely cosmetic fields that don't feed the decision engine. Setting a
 start date shows a "day N" counter in the dashboard header (day 1 = that
 date); leave it blank to omit the counter entirely.
 
+## Schedule timezone
+
+The light, exhaust and pump schedules all run in one **schedule
+timezone** (IANA name, e.g. `Asia/Kolkata`), picked in the profile tab and
+saved with the grow profile (`SCHEDULE_TIMEZONE` is only the first-run
+default, `UTC`). Stored timestamps, the day/week charts, the grow-day
+counter and the min/max reset stay UTC.
+
 ## Light schedule
 
 The grow light has its own ESP32 relay and its own daily on/off schedule
 — never touched by the decision engine or auto/manual mode. Two states,
 switched from the dashboard:
 
-- **Schedule on**: a duty cycle anchored to 00:00 UTC — on for `on_hours`
-  (1-24, dashboard dropdown), off for the rest of the day. Computed fresh
+- **Schedule on**: on at `on_time`, off at `off_time` (two dashboard time
+  pickers, HH:MM in the schedule timezone). An off time earlier than the
+  on time wraps past midnight (e.g. on 18:00, off 06:00); equal times are
+  rejected. Computed fresh
   from the current time every cycle, so there's no stored timer to lose
   on a restart.
 - **Schedule off**: direct manual control from the dashboard, holding
@@ -89,7 +98,7 @@ The exhaust fan has its own ESP32 relay too, controlled the same shape as
 the light (a schedule/manual master switch), just with a repeating
 **duty cycle** instead of a daily window — on for `run_minutes`, off for
 the rest of every `interval_minutes` (both 1-60, dashboard dropdowns),
-anchored to 00:00 UTC the same way.
+anchored to midnight in the schedule timezone.
 
 When the schedule is **off**, what drives the exhaust depends on the mode:
 in **auto** mode it follows the AC — on whenever the AC is commanded on
@@ -100,6 +109,27 @@ set. An enabled schedule always wins, in either mode.
 `POST /api/exhaust/manual` is rejected with `409` while the schedule is
 on, or while the exhaust is following the AC (auto mode, schedule off);
 `run_minutes` can't exceed `interval_minutes` (`422`).
+
+
+## Pump
+
+The pump is **not** part of auto mode and is never driven by the soil
+moisture sensor (the reading is still shown and logged). It has its own
+manual/schedule switch on the dashboard:
+
+- **Manual**: pick 1-30 seconds and press **run**.
+- **Schedule**: "every N hours (1/2/3/4/6/8/12/24) for N seconds (1-30)",
+  one run per slot anchored to midnight in the schedule timezone — every
+  12h runs at 00:00 and 12:00. Turning the schedule on (or changing the
+  interval) waits for the next slot rather than running immediately.
+
+Because the ESP32 only checks in every ~20s, the backend can't time a 3s
+run itself. Instead the telemetry reply carries `pump_run: {id, seconds}`;
+the firmware runs the pump for that long on its own timer, reports
+`pump_last_run_id` back, and the backend stops re-sending once it matches.
+A request not picked up within `PUMP_RUN_REQUEST_TTL_SECONDS` is dropped.
+The firmware's 30s max-run cap and 60s cooldown still apply as a backstop.
+`POST /api/pump/run` is rejected with `409` while the schedule is on.
 
 ## Activity log
 
@@ -282,8 +312,11 @@ again for a different AC or if you ever need to confirm your protocol:
 | `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
 | `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |
 | `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
-| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light or exhaust) |
-| `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
+| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac, not light, exhaust or pump) |
+| `POST /api/pump/schedule` | Dashboard | pump schedule on/off, `interval_hours`, `run_seconds` |
+| `POST /api/pump/run` | Dashboard | one manual pump run of `seconds` (409 while the schedule is on) |
+| `GET /api/timezones` | Dashboard | timezone names accepted by the profile's `schedule_timezone` |
+| `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_time`/`off_time` (HH:MM, schedule timezone) |
 | `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
 | `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
 | `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |

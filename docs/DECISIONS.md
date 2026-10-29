@@ -16,8 +16,8 @@ was tried before landing here.
   humidity's high/low split; `TEMP_LOW_THRESHOLD_C` mirrors humidity's
   low-branch reasoning (pull in warmer room air instead of cooling a tent
   that's already too cold).
-- Soil moisture uses a hysteresis band (`SOIL_MOISTURE_LOW_THRESHOLD` +
-  `SOIL_MOISTURE_HYSTERESIS`) so the pump doesn't chatter at the boundary.
+- The pump is not decided here at all - soil moisture is reported only,
+  and the pump runs on its own manual/schedule control (see "Pump" below).
 - Manual mode bypasses this function entirely — `main.py` just reuses the
   last dashboard-commanded state.
 - Exhaust is never set by this function directly. With its own schedule
@@ -29,9 +29,9 @@ was tried before landing here.
 ## Pump safety (firmware)
 
 - `PUMP_COOLDOWN_SECONDS` only arms after a cap-triggered cutoff (30s
-  continuous run), not on an ordinary commanded-off — it guards against
-  the backend re-sending "pump on" right after a cutoff, not a legitimate
-  off/on from the decision engine's own hysteresis.
+  continuous run), not when a requested timed run ends normally — it's a
+  backstop against a run that somehow never ended, not part of normal
+  scheduling.
 - Any failed telemetry POST force-kills the pump immediately, not just a
   detected WiFi-layer disconnect.
 - The offline emergency-temperature floor (`EMERGENCY_TEMP_C`) is one-way
@@ -44,13 +44,7 @@ was tried before landing here.
   the raw ADC value to Serial every cycle so that calibration doesn't
   require guessing.
 - The firmware reports `pump_cooldown_remaining_s` in telemetry so the
-  dashboard can show "cooldown ~Xs" instead of a stuck-looking generic
-  "pending" while a commanded pump-on is being silently refused.
-- In manual mode, the backend cancels a standing pump-on command the
-  moment it learns a cap cutoff happened, so the pump never auto-restarts
-  once the cooldown clears — a fresh `POST /api/relay` is required. Auto
-  mode is unaffected: its decision engine re-evaluates the pump from
-  live soil moisture every cycle regardless.
+  dashboard's pump panel can show "cooldown ~Xs".
 
 ## Backend
 
@@ -227,13 +221,42 @@ was tried before landing here.
   without diffing two `GET /api/profile` responses by hand. Nothing is
   logged for a save that doesn't actually change any value.
 
+## Schedule timezone
+
+- One IANA `schedule_timezone` on the grow profile, shared by light,
+  exhaust and pump, rather than one per schedule - they all describe the
+  same grower's day. Saved through the existing profile path and DB
+  migration; validated against `zoneinfo` (`422` on an unknown name), and
+  `GET /api/timezones` serves that same list to the dropdown so the UI
+  never offers a name the backend would reject. `tzdata` is pinned since
+  slim Docker images may not ship the OS zone database.
+- Only the schedules use it. Stored timestamps, charts, the grow-day
+  counter and the min/max reset stay UTC.
+
+## Pump
+
+- Never part of `decide_relay_state()`; its own manual/schedule switch.
+- Runs are seconds long but the ESP32 polls every ~20s, so the firmware
+  times each run itself. The backend sends a one-time
+  `pump_run: {id, seconds}` request, re-sent until the firmware echoes the
+  id back as `pump_last_run_id` - acknowledgement makes repeated replies
+  harmless, and Unix-time-based ids mean a backend restart can't reuse an
+  id the firmware already ran.
+- Unacknowledged requests expire after `PUMP_RUN_REQUEST_TTL_SECONDS`
+  (300) so an ESP32 coming back online doesn't water at a random time.
+- Interval choices all divide 24 so slots line up with local midnight
+  every day. Enabling the schedule or changing the interval marks the
+  current slot done - turning it on never waters instantly.
+
 ## Light schedule
 
 - Own ESP32 relay, own field on `RelayState` — never touched by
   `decide_relay_state()` or auto/manual mode.
-- The schedule is a pure function of wall-clock time anchored to 00:00
-  UTC (on for `on_hours`, off for the rest of the day) — no stored "next
-  toggle" state, so it's correct immediately after a restart.
+- The schedule is a pure function of wall-clock time in the schedule
+  timezone: on at `on_time`, off at `off_time`, wrapping past midnight
+  when off is earlier than on. Equal times are rejected rather than
+  guessing always-on vs. always-off. No stored "next toggle" state, so
+  it's correct immediately after a restart.
 - The schedule toggle is the master switch: a manual command is rejected
   with `409` while it's on. Starts disabled by default so a fresh deploy
   never actuates on an unreviewed default photoperiod.
@@ -243,7 +266,7 @@ was tried before landing here.
 ## Exhaust schedule
 
 - Same "own relay, own schedule, master-switch" pattern as light, but a
-  repeating run/interval duty cycle instead of an `on_hours` window.
+  repeating run/interval duty cycle instead of an on/off time window.
   `run_minutes` can't exceed `interval_minutes` (`422`).
 - Never touched by `decide_relay_state()` or any sensor reading — its own
   schedule or a manual command only.
