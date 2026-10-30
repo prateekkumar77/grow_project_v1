@@ -17,6 +17,11 @@ static bool haveTelemetrySchedule = false;
 
 static float lastTempC = NAN;
 
+// Id of the last pump run request acted on, reported back every cycle so
+// the backend stops re-sending it. 0 after boot - backend ids are Unix-time
+// based, so they never collide with 0.
+static uint32_t lastPumpRunId = 0;
+
 void setup() {
   Serial.begin(SERIAL_BAUD);
   sensors_begin();
@@ -60,12 +65,21 @@ static void runTelemetryCycle() {
   String mode;
   RelayState commanded;
   bool acCommanded = acActual;
+  uint32_t pumpRunId = 0;
+  uint16_t pumpRunSeconds = 0;
 
   bool ok = network_post_telemetry(reading, actual, acActual, relays.pumpCooldownRemainingSeconds(),
-                                    mode, commanded, acCommanded);
+                                    lastPumpRunId, mode, commanded, acCommanded, pumpRunId,
+                                    pumpRunSeconds);
   if (ok) {
-    relays.applyCommand(commanded.fan, commanded.exhaust, commanded.pump, commanded.light);
+    relays.applyCommand(commanded.fan, commanded.exhaust, commanded.light);
     acController.applyCommand(acCommanded);
+    // A request the backend keeps re-sending until acknowledged - act on
+    // each id once, even though the same id arrives every cycle until then.
+    if (pumpRunId != 0 && pumpRunId != lastPumpRunId) {
+      relays.startPumpRun(pumpRunSeconds);
+      lastPumpRunId = pumpRunId;
+    }
   } else {
     // The instant a telemetry POST fails: kill the pump, unconditionally.
     relays.forcePumpOff();
@@ -76,6 +90,7 @@ void loop() {
   // Safety logic must run every iteration, independent of the telemetry
   // cadence and independent of network state.
   relays.tick(lastTempC, WiFi.status() == WL_CONNECTED);
+  acController.tick();
 
   bool justReconnected = serviceWifi();
 

@@ -1,411 +1,203 @@
 # Grow tent automation system
 
-Automated environmental control for a home grow tent: an ESP32 reports
-sensor readings, a FastAPI backend decides what the relays (and the AC,
-via IR) should do, and a browser dashboard shows/controls it, with
-optional Home Assistant integration for its own reachability badge. The
-dashboard is a single HTML file
-with no build step - no bundler, no npm install, just edit and reload -
-responsive down to a small phone, with a sticky status header and
-touch-sized controls throughout. It does load a handful of CDN libraries
-(Chart.js, Lucide icons, Motion, Google Fonts) for real charts/icons/
-animation/type instead of hand-rolled equivalents - see "CDN dependency"
-below for what that trades away.
+An ESP32 reads the tent's sensors and drives its relays (fan, exhaust,
+pump, light) and an IR transmitter for the AC. A FastAPI backend decides
+what everything should do, stores readings, sends Telegram alerts, and
+serves a browser dashboard. Home Assistant is optional, used for a
+reachability badge and a smart plug's live power readings.
 
-The system is plant-agnostic: nothing in the hardware or control logic
-assumes a species, strain, or growth stage. What changes between grows is
-a small set of threshold values (a "grow profile," below), not code.
+Nothing assumes a particular plant. What changes between grows is a small
+set of thresholds (the **grow profile**), edited from the dashboard.
+
+- [`docs/automation-logic.md`](docs/automation-logic.md): the control rules.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md): why things are built the way they are.
 
 ## Architecture
 
-The ESP32 makes no environmental decisions — every cycle it reports its
-sensor readings and actual relay states, and applies whatever command
-comes back in the same response. The only logic that runs on the ESP32 is
-safety logic that has to survive a dead network connection (pump run-time
-cap/cooldown, an offline emergency temperature floor). Every other rule
-lives in the backend.
+Every ~20s the ESP32 POSTs its readings and actual relay states to
+`/api/telemetry`. The response says what every output should be, and the
+ESP32 applies it. The ESP32 makes no environmental decisions itself. It
+only runs safety logic that must work without a network: timing pump runs,
+the pump run cap and cooldown, killing the pump on a failed POST, and an
+offline emergency temperature floor.
 
-See [`docs/automation-logic.md`](docs/automation-logic.md) for the full
-control rules, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for judgment
-calls made where the original brief left something unspecified.
+## Features
 
-## Methodology
-
-The decision engine compares live readings directly against fixed
-grow-profile thresholds — no rolling baseline, no history lookup, so the
-same reading always produces the same decision. This governs **fan, AC,
-and pump**, every cycle, in **auto** mode only. **Light and exhaust** run
-on their own independent schedules instead (below) and are never touched
-by it. **Manual** mode bypasses the decision engine for fan/AC/pump
-entirely — relay state is whatever was last commanded from the dashboard
-— and auto-reverts to auto after a period of inactivity.
-
-Full rule-by-rule behavior (humidity, temperature, soil moisture, pump
-safety): [`docs/automation-logic.md`](docs/automation-logic.md).
-
-### Grow profile
-
-Every threshold is a named, editable value, not a hardcoded number:
-
-| Variable | Governs |
+| Feature | Summary |
 |---|---|
-| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | when AC-on / fan-on-AC-off kicks in for humidity |
-| `TEMP_FAN_THRESHOLD_C` / `TEMP_AC_THRESHOLD_C` | absolute °C at which fan, then AC, engage |
-| `TEMP_LOW_THRESHOLD_C` | absolute °C below which AC turns off and fan pulls in warmer room air |
-| `SOIL_MOISTURE_LOW_THRESHOLD` / `SOIL_MOISTURE_HYSTERESIS` | when the pump starts, and how far moisture must recover before it stops |
-| `ALERT_TEMP_C` | when the backend force-overrides fan+AC on as a high-temp safety response |
+| **Auto / manual mode** | Auto: fan and AC follow the grow-profile thresholds. Manual: they hold what the dashboard last set, reverting to auto after `AUTO_REVERT_MINUTES` of inactivity. |
+| **Light** | Schedule (turn-on and turn-off time) or manual. Never affected by mode. |
+| **Exhaust** | Schedule (run N min every M min). With the schedule off it follows the AC in auto mode and the manual switch in manual mode. |
+| **Pump** | Manual (run for 1-30s) or schedule (every 1/2/3/4/6/8/12/24h for 1-30s). Never driven by mode or soil moisture. The ESP32 times each run. |
+| **Schedule timezone** | One IANA timezone (profile tab) for the light, exhaust and pump schedules. Stored timestamps and charts stay UTC. |
+| **AC over IR** | COOLIX protocol, 20°C, high fan. Sent only when the state changes, then once more 30s later as a backup. |
+| **High-temp override** | At `ALERT_TEMP_C` the backend forces fan and AC on, in any mode. |
+| **Telegram alerts** | *Main*: emergency temperature and an AC power check. *All*: also every activity-log entry. |
+| **Live power row** | Current, voltage and power from a Home Assistant smart plug (optional). |
+| **Min/max badges** | Today's min/max on each live card, kept in the browser only, reset at 00:00 UTC. |
+| **Activity log** | Last 20 actions on the dashboard; the full history is in the DB and exportable to Excel. |
+| **History tab** | Day (30/60-min buckets) and week (6-hour buckets) charts plus a light on/off pie. Exports of readings and the activity log. |
 
-Retune these from the dashboard's **profile** tab at any time — no
-restart needed, and the edit is saved to the database so it survives one.
-`backend/.env.example` (`HUMIDITY_HIGH_THRESHOLD` etc.) only sets the
-*first-run* default, before anyone has ever saved a profile; editing it
-after that has no effect on a running system. `GROW_PROFILE_NAME`,
-`TENT_SIZE_M2`, and `GROW_START_DATE` live in the same profile and tab —
-purely cosmetic fields that don't feed the decision engine. Setting a
-start date shows a "day N" counter in the dashboard header (day 1 = that
-date); leave it blank to omit the counter entirely.
+## Grow profile
 
-## Light schedule
+Edited in the dashboard's **profile** tab and saved to the database, so it
+survives restarts. The matching `.env` values are only the defaults used
+before the first save.
 
-The grow light has its own ESP32 relay and its own daily on/off schedule
-— never touched by the decision engine or auto/manual mode. Two states,
-switched from the dashboard:
+| Field (`.env` default) | Governs |
+|---|---|
+| `HUMIDITY_HIGH_THRESHOLD` / `HUMIDITY_LOW_THRESHOLD` | AC on above high; AC off and fan on below low |
+| `TEMP_FAN_THRESHOLD_C` / `TEMP_AC_THRESHOLD_C` | °C at which the fan, then the AC, engage |
+| `TEMP_LOW_THRESHOLD_C` | °C below which the AC turns off and the fan pulls in room air |
+| `ALERT_TEMP_C` | forces fan and AC on, and sends a Telegram alert |
+| `TELEGRAM_ALERT_MODE` | `main` or `all` |
+| `SCHEDULE_TIMEZONE` | timezone the light, exhaust and pump schedules run in |
+| `GROW_PROFILE_NAME`, `TENT_SIZE_M2`, `GROW_START_DATE` | header label; a start date adds a "day N" counter |
 
-- **Schedule on**: a duty cycle anchored to 00:00 UTC — on for `on_hours`
-  (1-24, dashboard dropdown), off for the rest of the day. Computed fresh
-  from the current time every cycle, so there's no stored timer to lose
-  on a restart.
-- **Schedule off**: direct manual control from the dashboard, holding
-  whatever it was last set to.
-
-The schedule toggle is the master switch: `POST /api/light/manual` is
-rejected with `409` while it's on, the same way `/api/relay` rejects a
-manual command outside manual mode.
-
-## Exhaust schedule
-
-The exhaust fan has its own ESP32 relay too, controlled the same shape as
-the light (a schedule/manual master switch), just with a repeating
-**duty cycle** instead of a daily window — on for `run_minutes`, off for
-the rest of every `interval_minutes` (both 1-60, dashboard dropdowns),
-anchored to 00:00 UTC the same way. Never touched by
-`decide_relay_state()` or any sensor reading.
-
-`POST /api/exhaust/manual` is rejected with `409` while the schedule is
-on, and `run_minutes` can't exceed `interval_minutes` (`422`).
-
-## Activity log
-
-The dashboard's "recent activity" panel shows the last 20 actions,
-newest first, each with a timestamp and actor: mode switches, relay
-on/off transitions (manual or automatic), schedule changes, and data
-exports — e.g. `fan on <admin>` or `pump off <auto>`. Only actual
-transitions are logged, never a repeat of steady state.
-
-The live feed is in-memory only (capped at 20 entries, resets on backend
-restart) — but every entry is also durably written to the `activity_log`
-DB table, unbounded. **"download activity log"**, next to **"download
-sensor data"** on the history tab, exports that complete table.
-
-## History charts
-
-A second dashboard tab, **history** (a third, **profile**, covers editing
-the grow profile — see above):
-
-- **Daily readings** — temp/humidity/soil moisture for a chosen UTC day,
-  30-minute or 1-hour buckets. Temperature on the left axis (°C),
-  humidity + soil moisture sharing the right (already the same unit, %).
-  Each series also gets a dashed horizontal line at its average over the
-  currently-loaded window, with the numeric average shown in the legend.
-- **Weekly averages** — same shape for a chosen UTC week, 6-hour buckets
-  (28 points) — coarse enough to stay compact while keeping the intraday
-  pattern visible.
-- **Light schedule** — a pie chart of the current on/off split.
-
-Charts are aggregated server-side (`GET /api/charts/day`/`week`, backed
-by `backend/chart_data.py`) rather than shipping raw rows to average in
-the browser — a day is 4,000+ rows, a week 30,000+. A bucket with no
-readings renders as a gap, never zero or interpolated. Rendered with
-Chart.js (see "CDN dependency" below) - its own tooltip fires on tap as
-well as hover, so exact values are reachable on a phone with no custom
-touch-target code needed.
-
-## CDN dependency
-
-The dashboard loads four libraries from a CDN: **Chart.js** (+ its
-annotation plugin, for the average reference lines) for the history
-charts, **Lucide** for every icon, **Motion** for a handful of UI
-transitions (the offline/stale banners, tab switching, pending
-indicators), and **Google Fonts** (Inter + JetBrains Mono) for type. This
-is a deliberate departure from this project's earlier "zero CDN, works
-with no internet access" stance - accepted so the UI can use a real icon
-set, real charts, and a real animation library instead of hand-rolled
-equivalents. See `docs/DECISIONS.md` for the reasoning and what it costs:
-the dashboard still loads and the live/manual controls still work with no
-internet access, but icons render blank, charts show a "charts
-unavailable" message, fonts fall back to the OS default, and the handful
-of Motion-driven transitions instantly snap instead of animating.
-
-## Repository layout
-
-```
-firmware/     ESP32 firmware (PlatformIO): sensors, relays + safety, WiFi/HTTP
-backend/      FastAPI app: decision engine, persistence, HA client, dashboard
-docs/         Control-logic writeup and recorded design decisions
-docker-compose.yml   backend + Home Assistant
-```
+The light, exhaust and pump schedule settings are set from their own
+dashboard panels. They are kept in memory and reset to their `.env`
+defaults (schedules off) when the backend restarts.
 
 ## Running the backend
 
 ```bash
 cd backend
-cp .env.example .env      # edit thresholds, HA token, DASHBOARD_USERS, etc.
+cp .env.example .env      # set DASHBOARD_USERS, thresholds, tokens
 docker compose -f ../docker-compose.yml up --build
 ```
 
-The dashboard is served at `http://localhost:8000/`. Every tunable value
-(thresholds, intervals, timeouts, Home Assistant URL/token, dashboard
-logins) comes from `backend/.env` — see `.env.example` for the full list.
+The dashboard is at `http://localhost:8000/`. Every setting is listed in
+[`backend/.env.example`](backend/.env.example).
 
-To run the backend directly instead of via Docker:
+Without Docker, and to run the tests:
 
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload
-```
-
-Run the test suite:
-
-```bash
-cd backend
 pytest
 ```
 
-### Installing the dashboard as an app
-
-The dashboard ships a web app manifest (`backend/static/manifest.json`) and
-icons, so Chrome/Chromium offers a real **Install** button in the address
-bar — it opens in its own chromeless window from a desktop/taskbar icon,
-same as a native app, with no service worker or offline support involved.
-This works automatically over `https://` or `http://localhost`; on a plain
-LAN address (`http://192.168.x.x:8000`) Chrome won't offer the install
-button since that isn't a secure context, but **⋮ menu → Save and share →
-Create shortcut → Open as window** gives the same chromeless window
-regardless, no manifest required.
+**Install as an app:** Chrome offers an **Install** button over `https://`
+or `http://localhost`. On a plain LAN address, use **⋮ → Save and share →
+Create shortcut → Open as window**.
 
 ## Flashing the firmware
 
 ```bash
 cd firmware
-# edit include/config.h: WiFi credentials, backend host/port, pins
-pio run --target upload
+# edit include/config.h: WiFi, backend host/port, pins
+pio run -e esp32dev -t upload     # esp32dev is also the default env
 ```
 
-**Calibrate the soil moisture sensor before trusting its readings.**
-`SOIL_ADC_DRY`/`SOIL_ADC_WET` in `config.h` are placeholders — every
-capacitive probe reads differently. Open the Serial monitor (115200
-baud), dip the probe fully in water and note the printed raw value
-(`soil raw=<n> -> <pct>%`), do the same in dry air, then set both
-constants to what you actually measured and reflash.
+The backend and firmware share the telemetry format, so reflash whenever
+`firmware/` changes.
 
-### Capturing your AC's IR codes (identifying its protocol)
+**Calibrate the soil sensor.** `SOIL_ADC_DRY` / `SOIL_ADC_WET` in
+`config.h` are placeholders. Open the Serial monitor (115200 baud), note
+the printed `soil raw=<n>` in dry air and in water, set both values, and
+reflash.
 
-The AC is driven by an IR transmitter (an Adafruit 38KHz IR Transceiver,
-wired IRout → `IR_SEND_PIN` in `config.h`, default GPIO 14). This
-deployment's AC uses the COOLIX protocol, which IRremoteESP8266 supports
-natively via a structured state class (`IRCoolixAC` in
-`firmware/src/ir_ac.cpp`) — not a captured raw code. The capture utility
-below is how COOLIX was identified in the first place, and is only needed
-again for a different AC or if you ever need to confirm your protocol:
+**AC settings** live in `config.h`: `AC_TARGET_TEMP_C` (20) and
+`AC_IR_RESEND_DELAY_MS` (30000). Change them and reflash; you don't need
+the remote.
 
-1. Wire the module's IRin pin to GPIO 32 (also VIN/GND as normal) —
-   needed for this one-time capture only.
-2. Build and flash the capture utility, a **separate** PlatformIO
-   environment from the main firmware:
-   ```bash
-   cd firmware
-   pio run -e ir_capture -t upload
-   pio device monitor
-   ```
-3. Point your real AC remote at the module and press a button — any
-   button is enough just to identify the protocol.
-4. Each press prints to Serial. Two outcomes, depending on whether
-   IRremoteESP8266 recognizes your AC's protocol:
-   - **Protocol recognized** (prints e.g. `Protocol: COOLIX`) — the
-     common case, and what this project's own reference deployment got.
-     IRremoteESP8266 almost certainly has a structured state class for
-     it (`ir_<Protocol>.h`, e.g. `ir_Coolix.h` → `IRCoolixAC`) with
-     `setTemp()`/`setMode()`/`setFan()`/`setPower()` methods — use that
-     in `ir_ac.cpp`'s `applyCommand()`, the way this project's own
-     `IrAcController` already does for COOLIX. `AC_TARGET_TEMP_C` in
-     `config.h` is the firmware constant that sets the target
-     temperature — change it and reflash to retarget, no physical
-     remote needed.
-   - **Protocol unrecognized** (prints `Protocol: UNKNOWN`) — paste the
-     raw timing array it still prints (a ready-to-paste
-     `uint16_t rawData[...] = {...}` line) into a new header, and use
-     `irsend.sendRaw(array, length, 38)` with a plain `IRsend` in
-     `ir_ac.cpp` instead — this is the one case where you're stuck
-     replaying a captured snapshot rather than setting state
-     programmatically, since there's no structured class for an unknown
-     protocol.
-5. Optional sanity check before trusting the real firmware/dashboard with
-   it: flash the `ir_test` environment, which sends the AC's COOLIX
-   ON/OFF state every 5 seconds the same way the real firmware does —
-   point the module's IRout LED at the AC and confirm it switches on and
-   off on its own:
-   ```bash
-   pio run -e ir_test -t upload
-   pio device monitor
-   ```
-6. Reflash the **main** firmware (`pio run -e esp32dev -t upload`, also
-   the default environment for a bare `pio run -t upload`) — neither the
-   capture utility nor the IR test sketch is ever part of it.
+### Identifying a different AC's IR protocol
 
-## API
+The IR transmitter (Adafruit 38kHz IR Transceiver) is wired IRout →
+`IR_SEND_PIN` (GPIO 14). `firmware/src/ir_ac.cpp` uses IRremoteESP8266's
+`IRCoolixAC`. For another AC:
 
-| Method & path | Caller | Purpose |
-|---|---|---|
-| `POST /api/telemetry` | ESP32 | report readings + actual relay state, receive the commanded state |
-| `GET /api/status` | Dashboard | live mode, commanded/reported relay state, last-seen, latest reading, last 20 activity-log entries |
-| `GET /api/profile` | Dashboard | the active grow profile (every decision-engine threshold plus the cosmetic name/tent size) |
-| `POST /api/profile` | Dashboard | save an edited grow profile (admin-only) — persists to the database, survives a restart |
-| `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
-| `GET /api/charts/day` | Dashboard | server-aggregated temp/humidity/soil averages for one UTC day, bucketed by `step_minutes` (30 or 60) |
-| `GET /api/charts/week` | Dashboard | server-aggregated temp/humidity/soil averages for 7 UTC days, 6-hour buckets (4 points/day) |
-| `POST /api/mode` | Dashboard | switch between `auto` and `manual` |
-| `POST /api/relay` | Dashboard | command a single relay (manual mode only; fan/ac/pump, not light or exhaust) |
-| `POST /api/light/schedule` | Dashboard | enable/disable the light schedule and set `on_hours` (1-24) |
-| `POST /api/light/manual` | Dashboard | command the light directly (only while its schedule is off) |
-| `POST /api/exhaust/schedule` | Dashboard | enable/disable the exhaust duty-cycle schedule and set `run_minutes`/`interval_minutes` (1-60 each) |
-| `POST /api/exhaust/manual` | Dashboard | command the exhaust directly (only while its schedule is off) |
-| `POST /api/export` | Dashboard/manual | generate an Excel export and return the `.xlsx` file itself |
-| `POST /api/activity/export` | Dashboard/manual | export the complete `activity_log` table (not just the last 20) and return the `.xlsx` file itself |
-| `GET /api/me` | Dashboard | who's currently authenticated (`username`, `role`) |
+1. Wire the module's IRin to GPIO 32, then flash and open the capture tool:
+   `pio run -e ir_capture -t upload && pio device monitor`.
+2. Press any button on the AC's remote, pointed at the module.
+3. If it prints a protocol name (e.g. `COOLIX`), use IRremoteESP8266's
+   matching `ir_<Protocol>.h` class in `ir_ac.cpp`. If it prints
+   `UNKNOWN`, use the raw array it prints with `IRsend::sendRaw()`.
+4. Optional check: `pio run -e ir_test -t upload` sends on/off every 5s.
+5. Reflash the main firmware: `pio run -e esp32dev -t upload`.
 
-## Dashboard access / roles
+## Telegram alerts
 
-HTTP Basic Auth — no sessions, no new dependency, just `base64`/`secrets`
-from the standard library. Users are declared in `.env`:
+1. Message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy
+   the token. It looks like `123456789:AAH...`, including the number
+   before the colon.
+2. Send your new bot any message so it is allowed to message you.
+3. Get your numeric chat ID from [@userinfobot](https://t.me/userinfobot).
+4. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` and restart.
+   If either is blank, alerts are skipped and a warning is logged.
+
+Pick the mode in the profile tab ("telegram alerts"):
+
+- **main** (default):
+  - Temperature at or above `ALERT_TEMP_C`: one message when it first
+    crosses, then at most every `ALERT_NOTIFY_COOLDOWN_MINUTES` while it
+    stays above.
+  - **AC power check**: `AC_POWER_CHECK_DELAY_SECONDS` (60) after an AC
+    command, it warns if the plug reads ≥ `AC_OFF_MAX_POWER_W` (200) when
+    the AC should be off, or < `AC_ON_MIN_POWER_W` (30) when it should be
+    on. Needs `HA_POWER_ENTITY`.
+- **all**: also one message per activity-log entry, with no cooldown.
+
+## Home Assistant (optional)
+
+The dashboard shows whether Home Assistant is reachable (`HA_URL`,
+`HA_TOKEN`). For the live power row, set the smart plug's sensor entity
+IDs, found under **Settings → Devices & Services → Entities**:
+
+```bash
+HA_CURRENT_ENTITY=sensor.16amp_smart_plug_current
+HA_VOLTAGE_ENTITY=sensor.16amp_smart_plug_voltage
+HA_POWER_ENTITY=sensor.16amp_smart_plug_power
+```
+
+Each entity is read separately, so a blank or unavailable one only shows
+"--". Home Assistant being down never affects the control loop.
+
+## Dashboard access
+
+HTTP Basic Auth with users defined in `.env`:
 
 ```
 DASHBOARD_USERS=[{"username":"admin","password":"changeme-admin","role":"admin"},{"username":"viewer","password":"changeme-viewer","role":"viewer"}]
 ```
 
-- **admin** — full control.
-- **viewer** — can view everything, but every mutating call is rejected
-  with `403`; the UI also disables the matching controls, but the `403`
-  is what actually enforces it.
+- **admin** can do everything.
+- **viewer** is read-only; every non-GET request gets `403`.
+- `POST /api/telemetry` is the only route without a login, because the
+  firmware sends no credentials.
+- A missing or invalid `DASHBOARD_USERS` rejects every request.
 
-`POST /api/telemetry` is the one unauthenticated route (the firmware
-sends no credentials). Everything else, including static files, requires
-a valid login. Passwords are plaintext in `.env` — same trust model as
-`HA_TOKEN` — and a missing/malformed `DASHBOARD_USERS` fails closed
-(rejects everything, no default login shipped).
+The dashboard is a single HTML file with no build step. It loads Chart.js,
+Lucide icons, Motion and Google Fonts from CDNs. Without internet the
+controls still work, but icons are blank, charts show "unavailable",
+fonts fall back and animations snap.
 
-Basic Auth is stateless: no session, no timeout, no working "log out" —
-staying logged in is just the browser caching credentials for as long as
-it wants to.
+## API
 
-## AC control
+| Method & path | Caller | Purpose |
+|---|---|---|
+| `POST /api/telemetry` | ESP32 | report readings and actual state; receive commanded state and any `pump_run` |
+| `GET /api/status` | Dashboard | mode, relay states, latest reading, light/exhaust/pump status, HA status, last 20 activity entries |
+| `GET /api/profile` / `POST /api/profile` | Dashboard | read / save the grow profile |
+| `GET /api/timezones` | Dashboard | timezone names accepted by `schedule_timezone` |
+| `GET /api/history` | Dashboard | past readings (`limit`, `since`, `until`) |
+| `GET /api/charts/day` / `week` | Dashboard | bucketed temp/humidity/soil averages (UTC) |
+| `POST /api/mode` | Dashboard | `auto` or `manual` |
+| `POST /api/relay` | Dashboard | set fan or AC (manual mode only) |
+| `POST /api/light/schedule` / `manual` | Dashboard | light schedule (`on_time`, `off_time`) or direct on/off (`409` while the schedule is on) |
+| `POST /api/exhaust/schedule` / `manual` | Dashboard | exhaust duty cycle (`run_minutes`, `interval_minutes`, 1-60) or direct on/off (`409` while the schedule is on or it is following the AC) |
+| `POST /api/pump/schedule` | Dashboard | pump schedule (`enabled`, `interval_hours`, `run_seconds`) |
+| `POST /api/pump/run` | Dashboard | one manual run of `seconds` (`409` while the schedule is on) |
+| `POST /api/export` | Dashboard | readings as `.xlsx` |
+| `POST /api/activity/export` | Dashboard | full activity log as `.xlsx` |
+| `GET /api/me` | Dashboard | current user and role |
 
-Fan, exhaust, pump, light, and now AC are all directly ESP32-driven — the
-first four via physical relays, AC via an IR transmitter replaying raw
-codes captured from the real remote (see "Capturing your AC's IR codes"
-above). AC is still part of the decision engine's humidity/temperature
-escalation exactly as before; only the actuation mechanism changed, from
-a push to Home Assistant to a command in the same telemetry response the
-ESP32 already polls for fan/pump/light.
+## Repository layout
 
-IR is fire-and-forget like any IR remote — there's no confirmation
-channel, so `reported_relay_state.ac` is "what the ESP32 last told the AC
-to do," not a verified real state. The firmware only transmits on an
-actual on→off or off→on transition (never every telemetry cycle), since
-unlike a relay pin, re-sending the same IR code isn't a harmless no-op.
-
-Crossing `ALERT_TEMP_C` forces fan and AC on directly, and (if configured)
-also fires a Telegram message — see the next section.
-
-## Telegram emergency-temperature alerts
-
-Optional. The moment `temp_c` first crosses `ALERT_TEMP_C`, the backend
-sends a Telegram message to your phone, then at most one more every
-`ALERT_NOTIFY_COOLDOWN_MINUTES` (default 15) for as long as it stays
-crossed — frequent enough that a sustained emergency isn't silent for
-hours, rare enough that it isn't a message every ~20s telemetry cycle.
-This is separate from the fan+AC override above, which still re-applies
-every cycle regardless of whether a message was sent or Telegram is even
-configured.
-
-1. Message [@BotFather](https://t.me/BotFather) on Telegram, send
-   `/newbot`, and follow the prompts (any name/username). It replies with
-   a bot token like `123456789:AAH...` — that's `TELEGRAM_BOT_TOKEN`.
-2. Start a chat with your new bot (search its username, send it any
-   message — e.g. "hi") so it's allowed to message you back.
-3. Get your chat ID: message [@userinfobot](https://t.me/userinfobot) (or
-   any similar bot) and it replies with your numeric ID — that's
-   `TELEGRAM_CHAT_ID`.
-4. Set both in `.env` and restart the backend:
-   ```bash
-   TELEGRAM_BOT_TOKEN=123456789:AAH...
-   TELEGRAM_CHAT_ID=987654321
-   ```
-5. Leaving either blank disables the notification entirely (logged as a
-   warning, not an error) — the fan+AC override still happens either way.
-
-### Alert mode: main alerts vs all alerts
-
-A segmented toggle in the dashboard's **Profile** tab ("telegram alerts"
-panel) switches between two notification modes, saved with the rest of the
-grow profile:
-
-- **main alerts** (default) — exactly the above: only the
-  emergency-temperature alert, rate-limited by
-  `ALERT_NOTIFY_COOLDOWN_MINUTES`.
-- **all alerts** — also sends a Telegram message for every entry that lands
-  in the dashboard's activity feed: relay toggles (manual or auto-mode),
-  mode switches, light/exhaust schedule changes, profile saves, exports.
-  Uncapped — no cooldown — since relay entries already only log an actual
-  on/off *transition*, not every ~20s telemetry cycle, so this doesn't spam
-  on its own. The emergency-temperature alert itself isn't duplicated here;
-  it keeps sending its own single, more detailed message either way.
-
-Takes effect immediately on save, same as every other profile field — no
-restart needed. `TELEGRAM_ALERT_MODE` in `.env` sets the first-run default
-before anyone has saved a profile from the dashboard.
-
-## Home Assistant
-
-No longer used for AC (see above) — Home Assistant integration is now a
-reachability badge plus, optionally, a live power/current/voltage readout
-(`backend/ha_client.py`). Checked on its own background schedule
-(`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s), never inline with a
-request, so a slow/hanging HA can't add latency to a page load. An HA
-outage has no effect on anything else — it never blocked
-`/api/telemetry` even when it did drive AC, and now has even less to do
-with the control loop.
-
-### Live power row (optional)
-
-If HA monitors a smart plug or similar device (current/voltage/power
-sensors), the dashboard can show those live on the **live** tab, right
-below temperature/humidity/soil moisture — handy for watching how much
-the fan/pump/AC are actually drawing.
-
-1. In Home Assistant, find the exact entity IDs: **Settings → Devices &
-   Services → Entities**, search for your device, note the IDs (e.g.
-   `sensor.16amp_smart_plug_current`).
-2. Set them in `.env`:
-   ```bash
-   HA_CURRENT_ENTITY=sensor.16amp_smart_plug_current
-   HA_VOLTAGE_ENTITY=sensor.16amp_smart_plug_voltage
-   HA_POWER_ENTITY=sensor.16amp_smart_plug_power
-   ```
-3. Restart the backend. Each value is fetched independently
-   (`HA_POWER_POLL_INTERVAL_SECONDS`, default 10s) — leaving one entity
-   blank, or one going temporarily unavailable, only blanks that one
-   value ("--" on the dashboard), not the other two.
-
-Leaving all three blank (the default) just means the row always shows
-"--" — no error, nothing else is affected.
+```
+firmware/            ESP32 firmware (PlatformIO): sensors, relays, IR, safety, WiFi/HTTP
+backend/             FastAPI app, decision engine, schedules, alerts, dashboard (static/)
+docs/                control rules and design decisions
+docker-compose.yml   backend + Home Assistant
+```

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from alerting import should_notify_all_alerts, should_send_temp_alert
+from alerting import ac_power_check_failed, should_notify_all_alerts, should_send_temp_alert
 
 NOW = datetime(2026, 1, 1, 12, 0, 0)
 
@@ -48,3 +48,25 @@ def test_all_mode_notifies_ordinary_entries():
 
 def test_all_mode_skips_temp_alert_entry_to_avoid_double_send():
     assert should_notify_all_alerts("all", "temperature alert sent: 33.0C") is False
+
+
+def test_all_mode_skips_ac_check_entry_to_avoid_double_send():
+    assert should_notify_all_alerts("all", "ac power check failed: off but 850W") is False
+
+
+def test_ac_off_check_passes_below_threshold():
+    assert ac_power_check_failed(False, 199.0, off_max_w=200, on_min_w=30) is False
+
+
+def test_ac_off_check_fails_at_or_above_threshold():
+    assert ac_power_check_failed(False, 200.0, off_max_w=200, on_min_w=30) is True
+    assert ac_power_check_failed(False, 850.0, off_max_w=200, on_min_w=30) is True
+
+
+def test_ac_on_check_passes_at_or_above_threshold():
+    assert ac_power_check_failed(True, 30.0, off_max_w=200, on_min_w=30) is False
+    assert ac_power_check_failed(True, 900.0, off_max_w=200, on_min_w=30) is False
+
+
+def test_ac_on_check_fails_below_threshold():
+    assert ac_power_check_failed(True, 5.0, off_max_w=200, on_min_w=30) is True

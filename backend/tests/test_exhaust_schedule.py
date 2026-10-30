@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from exhaust_schedule import is_exhaust_on
+from exhaust_schedule import exhaust_follows_ac, is_exhaust_on
 
 
 def test_within_run_window():
@@ -28,3 +28,16 @@ def test_always_on_when_run_equals_interval():
 
 def test_minimal_one_minute_cycle_is_always_on():
     assert is_exhaust_on(datetime(2026, 1, 1, 0, 0, 30), run_minutes=1, interval_minutes=1) is True
+
+
+def test_schedule_enabled_never_follows_ac():
+    assert exhaust_follows_ac(schedule_enabled=True, mode="auto") is False
+    assert exhaust_follows_ac(schedule_enabled=True, mode="manual") is False
+
+
+def test_auto_mode_with_schedule_off_follows_ac():
+    assert exhaust_follows_ac(schedule_enabled=False, mode="auto") is True
+
+
+def test_manual_mode_with_schedule_off_uses_manual_switch():
+    assert exhaust_follows_ac(schedule_enabled=False, mode="manual") is False

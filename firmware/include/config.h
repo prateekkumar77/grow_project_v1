@@ -45,6 +45,10 @@
 // physical remote needed.
 #define AC_TARGET_TEMP_C 20
 
+// The AC sometimes misses an IR signal, so every on/off command is sent
+// once more this long after the first send, as a backup.
+#define AC_IR_RESEND_DELAY_MS 30000UL
+
 // ---------------------------------------------------------------------------
 // Soil moisture calibration
 // Raw ADC reading with the sensor in dry air vs. fully in water.

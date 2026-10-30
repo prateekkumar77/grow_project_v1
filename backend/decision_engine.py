@@ -23,11 +23,6 @@ class GrowProfile:
     temp_fan_threshold_c: float
     temp_ac_threshold_c: float
     temp_low_threshold_c: float
-    soil_moisture_low_threshold: float
-    # Pump switches back off only once soil moisture clears the low
-    # threshold by this margin, to avoid rapidly flapping on/off right at
-    # the boundary.
-    soil_moisture_hysteresis: float
 
     @classmethod
     def from_env(cls) -> "GrowProfile":
@@ -37,8 +32,6 @@ class GrowProfile:
             temp_fan_threshold_c=float(os.getenv("TEMP_FAN_THRESHOLD_C", "26.0")),
             temp_ac_threshold_c=float(os.getenv("TEMP_AC_THRESHOLD_C", "28.0")),
             temp_low_threshold_c=float(os.getenv("TEMP_LOW_THRESHOLD_C", "18.0")),
-            soil_moisture_low_threshold=float(os.getenv("SOIL_MOISTURE_LOW_THRESHOLD", "35")),
-            soil_moisture_hysteresis=float(os.getenv("SOIL_MOISTURE_HYSTERESIS", "5")),
         )
 
 
@@ -52,7 +45,6 @@ class Reading:
 def decide_relay_state(reading: Reading, previous_state: RelayState, profile: GrowProfile) -> RelayState:
     fan = previous_state.fan
     ac = previous_state.ac
-    pump = previous_state.pump
 
     # --- humidity ------------------------------------------------------------
     if reading.humidity >= profile.humidity_high_threshold:
@@ -78,15 +70,9 @@ def decide_relay_state(reading: Reading, previous_state: RelayState, profile: Gr
         ac = False
         fan = True
 
-    # --- soil moisture / pump ---------------------------------------------------
-    if reading.soil_moisture <= profile.soil_moisture_low_threshold:
-        pump = True
-    elif reading.soil_moisture >= profile.soil_moisture_low_threshold + profile.soil_moisture_hysteresis:
-        pump = False
-    # else: within the hysteresis band - hold whatever the pump was doing.
-
-    # Exhaust is never touched here - it's driven entirely by its own
-    # run/interval duty-cycle schedule (see exhaust_schedule.py), same as
-    # light is driven by its own schedule. The caller overwrites it after
-    # this call, same pattern as light.
-    return RelayState(fan=fan, ac=ac, pump=pump)
+    # Exhaust is never set here. The caller fills it in afterwards: its own
+    # schedule if enabled, otherwise (in auto mode) a mirror of the final
+    # `ac` value - see exhaust_schedule.py.
+    # Pump isn't decided here either - it has its own manual/schedule runs
+    # (pump_schedule.py), never driven by any reading.
+    return RelayState(fan=fan, ac=ac)

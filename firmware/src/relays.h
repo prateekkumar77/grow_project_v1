@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 struct RelayState {
   bool fan;
   bool exhaust;
@@ -8,21 +10,29 @@ struct RelayState {
 };
 
 // Owns the four physical relays and enforces the ONLY logic that is allowed
-// to run locally: safety limits that must hold even with a dead backend.
+// to run locally: safety limits that must hold even with a dead backend,
+// and timing pump runs (the backend asks for "run N seconds" once; the
+// ESP32 polls only every ~20s, so it can't time a 3s run itself).
 // Everything else (what the relays *should* be doing environmentally, and
-// the light's on/off schedule) is decided by the backend and merely
+// the light/exhaust schedules) is decided by the backend and merely
 // applied here via applyCommand().
 class RelayController {
  public:
   void begin();
 
-  // Apply a backend- or dashboard-commanded state. Subject to the pump
-  // cap/cooldown safety check below - a commanded pump-on can be refused.
-  // fan/exhaust/light apply unconditionally; there is no local logic for
-  // them beyond the emergency temperature floor in tick().
-  void applyCommand(bool fan, bool exhaust, bool pump, bool light);
+  // Apply a backend- or dashboard-commanded state. fan/exhaust/light apply
+  // unconditionally; there is no local logic for them beyond the emergency
+  // temperature floor in tick(). The pump isn't part of this - it only
+  // runs via startPumpRun().
+  void applyCommand(bool fan, bool exhaust, bool light);
+
+  // Run the pump for `seconds` (clamped to MAX_PUMP_RUN_SECONDS), then
+  // tick() switches it off on its own - no backend round-trip needed.
+  // Refused (pump stays off) while the post-cap cooldown is active.
+  void startPumpRun(uint16_t seconds);
 
   // Must be called frequently (every loop iteration). Enforces, in order:
+  //   0. Ending a timed pump run (startPumpRun) once its time is up.
   //   1. Pump max-run cutoff + cooldown arming.
   //   2. Emergency temperature floor while offline.
   // `lastTempC` is the most recent sensor reading (NAN if none yet).
@@ -53,5 +63,6 @@ class RelayController {
   bool _light = false;
 
   unsigned long _pumpOnSinceMs = 0;      // 0 = pump not currently timed as "on"
+  unsigned long _pumpRunMs = 0;          // requested length of the current run; 0 = none
   unsigned long _pumpCooldownUntilMs = 0;  // millis() timestamp; 0 = no cooldown active
 };

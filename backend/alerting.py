@@ -1,6 +1,6 @@
-"""Pure decide-whether-to-notify logic for the high-temperature Telegram
-alert (see telegram_client.py for the actual I/O), kept separate so it's
-testable without mocking network calls or wall-clock time."""
+"""Pure decide-whether-to-notify logic for the Telegram alerts (see
+telegram_client.py for the actual I/O), kept separate so it's testable
+without mocking network calls or wall-clock time."""
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -23,15 +23,27 @@ def should_send_temp_alert(
     return now - last_sent >= timedelta(minutes=cooldown_minutes)
 
 
-# Prefix of the one activity-log entry the emergency-temperature alert itself
-# records (see post_telemetry's should_send_temp_alert() call site) - it
-# already gets its own, more detailed Telegram message unconditionally, so
-# "all alerts" mode must not also send a second, redundant one for it.
+def ac_power_check_failed(ac_on: bool, power_w: float, off_max_w: float, on_min_w: float) -> bool:
+    """After an AC on/off command has had time to take effect, the smart
+    plug's power draw should match it: under off_max_w once turned off,
+    at least on_min_w once turned on. True means it doesn't - the AC
+    likely missed the IR signal."""
+    if ac_on:
+        return power_w < on_min_w
+    return power_w >= off_max_w
+
+
+# Prefixes of the activity-log entries that the "main" alerts (emergency
+# temperature, AC power check) record - each already gets its own, more
+# detailed Telegram message unconditionally, so "all alerts" mode must not
+# also send a second, redundant one for them.
 TEMP_ALERT_ACTIVITY_PREFIX = "temperature alert sent:"
+AC_CHECK_ACTIVITY_PREFIX = "ac power check failed:"
+MAIN_ALERT_ACTIVITY_PREFIXES = (TEMP_ALERT_ACTIVITY_PREFIX, AC_CHECK_ACTIVITY_PREFIX)
 
 
 def should_notify_all_alerts(telegram_alert_mode: str, message: str) -> bool:
     """"all alerts" mode notifies on every activity-log entry except the
-    emergency-temperature one, which the dedicated alert path already
-    covers - "main alerts" mode never notifies here at all."""
-    return telegram_alert_mode == "all" and not message.startswith(TEMP_ALERT_ACTIVITY_PREFIX)
+    main alerts' own entries, which their dedicated alert paths already
+    cover - "main alerts" mode never notifies here at all."""
+    return telegram_alert_mode == "all" and not message.startswith(MAIN_ALERT_ACTIVITY_PREFIXES)
