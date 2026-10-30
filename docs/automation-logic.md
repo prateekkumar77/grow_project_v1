@@ -1,242 +1,141 @@
 # Automation logic
 
-Plain-language description of how the grow tent decides what to do. The
-ESP32 never makes environmental decisions itself — it only reports sensor
-readings and its actual relay states, and applies whatever the backend
-tells it to do.
+How the system decides what each output does. The backend makes every
+decision. The ESP32 reports readings and actual states, applies the
+commanded state it gets back, and runs only the safety logic listed at
+the end.
 
-Sections up through "Manual mode" cover **fan and AC** — the two
-outputs `decide_relay_state()` decides, only in **auto** mode. Fan is a
-physical ESP32 relay; AC is an IR transmitter instead (see below) — both
-are ESP32-driven either way. **Light, exhaust and pump** run on their own
-schedules (or manual control) and are covered separately, further down —
-none of them is ever decided by `decide_relay_state()` or any sensor
-reading. All three schedules run in the grow profile's
-`schedule_timezone` (IANA name, default `UTC`).
+| Output | Driven by |
+|---|---|
+| Fan, AC | decision engine (auto mode) or dashboard (manual mode) |
+| Light | its own schedule or manual switch, whatever the mode |
+| Exhaust | its own schedule; with the schedule off, it follows the AC (auto mode) or the manual switch (manual mode) |
+| Pump | manual timed runs or its own interval schedule, whatever the mode |
 
-## What gets measured
+All thresholds below are grow-profile values, edited live in the
+dashboard's profile tab. Defaults are shown in brackets.
 
-- **Temperature** and **humidity** from the DHT22.
-- **Soil moisture** from the analog probe, converted to a 0–100% scale.
+## Sensors
 
-Every rule below compares the current reading directly against a fixed
-"grow profile" threshold - there's no baseline or history lookup. The
-same reading always produces the same decision, and retuning for a
-different plant/stage/tent is a live edit from the dashboard's **profile**
-tab - no restart needed, and it's saved to the database so it survives
-one. `backend/.env.example` only sets the first-run default, before
-anyone has ever saved a profile.
+- **Temperature and humidity** come from the DHT22.
+- **Soil moisture** comes from the analog probe, scaled to 0-100%. It is
+  shown and recorded only; it controls nothing.
 
-## Humidity rules
+## Auto mode: fan and AC
 
-- **Humidity climbing at or above `HUMIDITY_HIGH_THRESHOLD`** (default 65%):
-  turn the **AC** on. The AC pulls in drier, cooler conditioned air, which
-  brings both temperature and humidity down together.
-- **Humidity dropping at or below `HUMIDITY_LOW_THRESHOLD`** (default 40%,
-  expected to be rare with no active ventilation): turn the **AC off** and
-  the **fan on**, so the tent pulls in room air instead — the room is
-  normally more humid than the tent, so this raises humidity back up
-  without needing a humidifier.
+`decide_relay_state()` in `backend/decision_engine.py` compares each
+reading directly with the thresholds, with no averaging or history:
 
-## Temperature rules
+- **Humidity at or above `HUMIDITY_HIGH_THRESHOLD`** (65%): AC on.
+- **Humidity at or below `HUMIDITY_LOW_THRESHOLD`** (40%): AC off, fan on,
+  to pull in the room's more humid air.
+- **Temperature at or above `TEMP_AC_THRESHOLD_C`** (28°C): AC on. This is
+  checked before the fan threshold, so the higher threshold wins.
+- **Temperature at or above `TEMP_FAN_THRESHOLD_C`** (26°C): fan on.
+- **Temperature at or below `TEMP_LOW_THRESHOLD_C`** (18°C): AC off, fan
+  on, to pull in warmer room air.
 
-All absolute tent temperature, not a rise relative to anything:
-
-- **At or above `TEMP_FAN_THRESHOLD_C`** (default 26.0°C): turn the
-  **fan on alone**. Air movement alone is often enough to knock a couple
-  of degrees off without pulling in outside air.
-- **At or above `TEMP_AC_THRESHOLD_C`** (default 28.0°C, checked before
-  the fan threshold so the higher bar wins): **escalate to AC**, which
-  handles both temperature and humidity at once rather than relying on
-  air movement alone.
-- **At or below `TEMP_LOW_THRESHOLD_C`** (default 18.0°C, unusually
-  cold): turn the **AC off** and the **fan on**, mirroring the
-  low-humidity rule — pulling in comparatively warmer room air rather
-  than cooling a tent that's already too cold.
-
-## Soil moisture
-
-The soil moisture reading is recorded and shown on the dashboard, but it
-no longer drives anything — the pump has its own manual/schedule control
-(see "Pump" below).
-
-## AC: an IR transmitter, not a relay
-
-The AC has no physical ESP32 relay, but unlike before it's no longer a
-Home Assistant device either — it's driven by an IR transmitter wired
-directly to the ESP32 (`firmware/src/ir_ac.*`). This deployment's AC uses
-the COOLIX protocol, which IRremoteESP8266 supports natively via a
-structured state class (`IRCoolixAC`), so `ir_ac.cpp` sets
-mode/fan/temperature/power and sends on every transition rather than
-replaying a code captured from the real remote (see `README.md`'s
-"Capturing your AC's IR codes") — the target temperature
-(`AC_TARGET_TEMP_C` in `config.h`) is a firmware constant, changeable by
-reflashing alone, never requiring the physical remote. An AC whose
-protocol isn't recognized has no structured class to use and falls back
-to `sendRaw()` with the raw array the capture tool still prints
-alongside. The decision engine's `ac` output is unchanged; only how it
-gets applied changed:
-
-- **Fan / pump / AC**: all three now flow the same way — the ESP32 polls
-  its commanded state (including `ac`) on every telemetry cycle and
-  applies it itself. Fan/pump hold a relay pin; AC fires an IR code, but
-  only on an actual on→off or off→on transition, never every cycle
-  (unlike a relay pin, re-sending the same IR code isn't a harmless
-  no-op — many AC remotes send a full state packet on every press).
-  Each transition is sent once more 30s later (`AC_IR_RESEND_DELAY_MS`)
-  as a backup in case the AC missed the first signal.
-- `/api/status` reports the ESP32's own `reported_relay_state.ac` as
-  "reported," the same as fan/pump. This is still not a *confirmed* real
-  state — IR is fire-and-forget, with no feedback channel telling the
-  ESP32 whether the AC actually responded — but it's at least "what we
-  last told it to do" rather than a value from a separate system (Home
-  Assistant) that could itself be unreachable.
-
-Because AC is now ESP32-driven like fan/pump, a network/backend outage no
-longer strands it mid-state waiting on a separate service the way a Home
-Assistant outage used to — the usual "holds its last commanded state
-while offline" behavior applies, same as any relay. One asymmetry
-remains, unchanged by this: `EMERGENCY_TEMP_C`'s offline failsafe (below)
-still only drives fan + exhaust locally, not AC, since extending it was
-out of scope for this change.
-
-## Home Assistant: reachability badge only
-
-Home Assistant is no longer part of AC control at all — it's kept wired
-in purely for its own "is Home Assistant actually reachable right now"
-dashboard badge, in case this project uses HA for something else later.
-A background job (`scheduler._check_ha_connection`, every
-`HA_HEALTH_CHECK_INTERVAL_SECONDS`, default 30s) calls
-`ha_client.check_connection()` (`GET {HA_URL}/api/`, Home Assistant's own
-health-check endpoint) and caches the result. `GET /api/status` just
-reports that cached value instantly - the check never runs on a request
-path, so a slow or hanging Home Assistant can't add latency to a page
-load the way an inline check would.
+**High-temperature override:** at or above `ALERT_TEMP_C` (32°C), fan and
+AC are forced on in any mode, and a Telegram alert is sent. Normal control
+resumes once the temperature drops back below it.
 
 ## Manual mode
 
-When the dashboard puts the system in **manual**, the decision engine is
-not consulted at all. Relay commands come only from the last thing a human
-clicked on the dashboard (`POST /api/relay`). The other thing that can
-still override a manual command is the ESP32's own local safety logic
-(the offline emergency-temperature floor).
+Fan and AC hold whatever was last set with `POST /api/relay`, and the
+decision engine is skipped. After `AUTO_REVERT_MINUTES` (30) with no
+dashboard activity, the system switches back to auto. `POST /api/relay`
+outside manual mode returns `409`.
 
-Manual mode automatically reverts to auto after `AUTO_REVERT_MINUTES`
-(default 30) of no dashboard activity, so a manual session can't be
-forgotten and left uncontrolled indefinitely.
+## Schedule timezone
 
-## Light: its own schedule, independent of mode
+The light, exhaust and pump schedules use the profile's
+`schedule_timezone` (an IANA name such as `Asia/Kolkata`; default `UTC`).
+Each schedule is worked out from the current time on every telemetry
+cycle, with no stored timer, so it is correct right after a restart.
 
-The grow light has its own ESP32 relay, just like the fan — but it is
-**never** decided by `decide_relay_state()` and is completely unaffected
-by whether the system is in auto or manual mode. It has exactly two states
-of its own, controlled from the dashboard:
+## Light
 
-- **Schedule on**: the light follows a daily duty cycle, computed fresh
-  every telemetry cycle from the current time — there's no stored "next
-  toggle" timer to lose track of, so it's correct immediately even right
-  after a backend restart. You set a **turn-on time** and a **turn-off
-  time** (`on_time`/`off_time`, HH:MM from the dashboard's time pickers)
-  in the schedule timezone: on 06:00 / off 00:00 means on from 06:00 to
-  midnight. An off time earlier than the on time wraps past midnight
-  (on 18:00 / off 06:00 is on overnight); equal times are rejected
-  (`422`).
-- **Schedule off**: the light is under direct manual control from the
-  dashboard (`POST /api/light/manual`) — it just holds whatever it was
-  last set to, with no automatic behavior at all.
+- **Schedule on:** the light is on from `on_time` to `off_time` (HH:MM).
+  If `off_time` is earlier than `on_time`, the window runs past midnight
+  (18:00 → 06:00 is on overnight). Equal times are rejected (`422`).
+- **Schedule off:** it holds what `POST /api/light/manual` last set. That
+  call returns `409` while the schedule is on.
 
-The dashboard's schedule toggle is the master switch between these two
-states; attempting a manual command while the schedule is on is rejected
-(`409`), the same way `/api/relay` rejects a manual fan/ac command
-outside manual mode.
+## Exhaust
 
-There's no offline-specific logic for the light beyond what every other
-physical relay already gets: it holds its last-commanded state if the
-network drops, same as fan. Unlike fan, though, its schedule keeps
-computing correctly in the background even while offline — it just can't
-reach the ESP32 to apply a change until connectivity returns.
+- **Schedule on:** it runs `run_minutes` out of every `interval_minutes`
+  (each 1-60), counted from local midnight. `run_minutes` greater than
+  `interval_minutes` is rejected (`422`).
+- **Schedule off, auto mode:** it follows the final commanded AC state,
+  including the high-temperature override.
+- **Schedule off, manual mode:** it holds what `POST /api/exhaust/manual`
+  last set. That call returns `409` in the other two cases.
 
-## Exhaust: its own duty-cycle schedule, or following the AC
+## Pump
 
-The exhaust fan has its own ESP32 relay too, with a schedule/manual master
-switch like the light — but the schedule *shape* is different, and with
-the schedule off it follows the AC in auto mode. Rather than one on/off window per day, it's
-a repeating **duty cycle**: on for `run_minutes`, then off for the rest of
-every `interval_minutes` window, anchored to midnight in the schedule
-timezone, cycling continuously (`exhaust_schedule.
-is_exhaust_on()`). Both `run_minutes` and `interval_minutes` are 1-60,
-picked from dashboard dropdowns, and the API rejects `run_minutes` greater
-than `interval_minutes` (`422`) since running longer than the cycle itself
-is meaningless.
+- **Manual:** `POST /api/pump/run` with 1-30 seconds requests one run. It
+  returns `409` while the schedule is on.
+- **Schedule:** one run of `run_seconds` (1-30) every `interval_hours` (1,
+  2, 3, 4, 6, 8, 12 or 24), in slots counted from local midnight, so 12h
+  means 00:00 and 12:00. Turning the schedule on, changing the interval,
+  or changing the timezone counts the current slot as already done, so
+  the pump never runs straight away.
 
-- **Schedule on**: `is_exhaust_on()` decides, recomputed fresh every
-  telemetry cycle - same restart-safety property as the light schedule,
-  since it's a pure function of wall-clock time with no stored "next
-  toggle" state.
-- **Schedule off, auto mode**: the exhaust mirrors the final commanded
-  AC state — on whenever AC is on, off whenever AC is off — including the
-  `ALERT_TEMP_C` override, since it's set after that override is applied
-  (`exhaust_schedule.exhaust_follows_ac()`).
-- **Schedule off, manual mode**: the exhaust is under direct manual
-  control from the dashboard (`POST /api/exhaust/manual`) — it just holds
-  whatever it was last set to.
+The ESP32 checks in only every ~20s, so it times each run itself:
 
-A manual command is rejected with `409` while the schedule is enabled or
-while the exhaust is following the AC. `decide_relay_state()` itself still
-never sets the exhaust; it only reaches it indirectly, through the AC
-decision it makes in auto mode.
+1. While a run is pending, every telemetry reply includes
+   `pump_run: {id, seconds}`.
+2. The firmware runs the pump for `seconds` the first time it sees a new
+   `id`, then reports it back as `pump_last_run_id`.
+3. Once that id comes back, the backend stops sending the request, so
+   repeated replies never cause a second run.
+4. Ids start from the current Unix time, so a backend restart can't reuse
+   one.
+5. A request not picked up within `PUMP_RUN_REQUEST_TTL_SECONDS` (300) is
+   dropped and logged, so an offline ESP32 never waters late.
 
-## Pump: manual timed runs or an interval schedule
+`relay_state.pump` in the reply is always false and ignored. The pump's
+reported state still shows when it's running.
 
-The pump is never part of auto mode or `decide_relay_state()`, and soil
-moisture never turns it on. Two states, switched from the dashboard:
+## AC (infrared)
 
-- **Manual**: a **run** button plus a seconds dropdown (1-30) —
-  `POST /api/pump/run` requests one run of that length.
-- **Schedule**: "every N hours for N seconds" — interval 1, 2, 3, 4, 6, 8,
-  12 or 24 hours, run 1-30 seconds. Slots are anchored to midnight in the
-  schedule timezone (`pump_schedule.slot_start()`), so every 12h runs at
-  00:00 and 12:00; one run is requested per slot. Enabling the schedule
-  or changing the interval marks the current slot as done, so the first
-  run is at the next boundary rather than immediately.
-  `POST /api/pump/run` is rejected with `409` while it's on.
+The AC has no relay. The ESP32 sends it COOLIX commands
+(`firmware/src/ir_ac.cpp`): on at `AC_TARGET_TEMP_C` (20°C) with high fan,
+or off.
 
-The ESP32 only polls every ~20s, too coarse to time a 3s run from the
-backend, so each run is a one-time request the firmware times itself:
+- A command is sent only when the commanded state changes, because
+  resending an IR state isn't harmless the way a relay pin is.
+- The same command is sent once more `AC_IR_RESEND_DELAY_MS` (30s) later
+  in case the AC missed it.
+- IR gives no feedback, so the AC's "reported" state means "what the
+  ESP32 last sent", not a confirmed state.
+- **AC power check:** `AC_POWER_CHECK_DELAY_SECONDS` (60) after a change,
+  the backend reads the Home Assistant plug's power. If it reads ≥
+  `AC_OFF_MAX_POWER_W` (200) when the AC should be off, or <
+  `AC_ON_MIN_POWER_W` (30) when it should be on, a "check AC" Telegram
+  alert is sent. The check is skipped when there is no power reading.
 
-- While a run is pending, every telemetry reply carries
-  `pump_run: {id, seconds}`. The firmware starts the pump for `seconds`
-  the first time it sees a new `id`, and reports it back as
-  `pump_last_run_id`; once that matches, the backend stops sending it.
-  A repeated reply therefore never re-runs, and ids start from the
-  current Unix time so a backend restart can't reuse one.
-- A request not picked up within `PUMP_RUN_REQUEST_TTL_SECONDS` (default
-  300) is dropped and logged, so an offline ESP32 doesn't water hours late.
-- The run finishes on the ESP32's own timer even if WiFi drops mid-run.
-  `relay_state.pump` in the reply is always false and ignored.
+## Home Assistant
 
-## What the firmware does entirely on its own
+Optional and never part of the control loop. Background jobs check
+whether it is reachable (every `HA_HEALTH_CHECK_INTERVAL_SECONDS`) and
+read the plug's current, voltage and power (every
+`HA_POWER_POLL_INTERVAL_SECONDS`). `/api/status` returns the cached
+values, so Home Assistant never slows a request.
 
-This is the *only* logic that lives on the ESP32, and it runs regardless of
-mode or what the backend says, because it has to survive a dead network
-connection:
+## Firmware-only safety
 
-- **Pump runs**: time each requested run itself (above), clamped to
-  `MAX_PUMP_RUN_SECONDS`.
-- **Pump cap**: force the pump off after `MAX_PUMP_RUN_SECONDS` (default
-  30s) of continuous running, and refuse to turn it back on for
-  `PUMP_COOLDOWN_SECONDS` (default 60s) afterwards — a backstop; a normal
-  timed run ending doesn't start a cooldown. The firmware still reports
-  `pump_cooldown_remaining_s`, shown on the dashboard's pump panel.
-- **On any failed telemetry POST**: force the pump off immediately and
-  unconditionally.
-- **While offline, if temperature reaches `EMERGENCY_TEMP_C`** (default
-  35.0°C — sanity-check this against your actual tent before trusting it):
-  force the fan and exhaust on locally, as a one-way floor. This is not
-  real climate control, just a last-resort heat cutoff while nothing else
-  is watching. **AC gets no such floor** - not a hardware limitation
-  anymore (it has its own IR actuation path now, see above), just not
-  wired into this specific failsafe; while offline it holds whatever it
-  was last set to, same as fan/light do for everything this floor
-  doesn't cover.
-- Everything else holds its last-commanded state while offline.
+These rules run on the ESP32 regardless of mode or backend:
+
+- **Pump timing:** each requested run is timed locally, clamped to
+  `MAX_PUMP_RUN_SECONDS`, and finishes even if WiFi drops partway.
+- **Pump cap:** after `MAX_PUMP_RUN_SECONDS` (30s) of continuous running
+  the pump is forced off and refused for `PUMP_COOLDOWN_SECONDS` (60s). A
+  normal timed run ending doesn't start a cooldown. The remaining
+  cooldown is reported as `pump_cooldown_remaining_s` and shown on the
+  pump panel.
+- **Failed telemetry POST:** the pump is forced off immediately.
+- **Offline above `EMERGENCY_TEMP_C`** (35°C): fan and exhaust are forced
+  on and stay on until the backend is reachable again.
+- Everything else, including the AC, holds its last commanded state while
+  offline.

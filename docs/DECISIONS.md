@@ -1,405 +1,163 @@
 # Decisions
 
-Judgment calls made where the build brief left a value or mechanism
-unspecified. States the current rationale only — not a changelog of what
-was tried before landing here.
+Why things are built the way they are. This states the current reasoning
+only; the behaviour itself is in [automation-logic.md](automation-logic.md).
 
-## Decision engine
+## Control split
 
-- `decide_relay_state(reading, previous_state, profile)` is pure and
-  stateless: every threshold comes from the `profile` argument, an
-  absolute grow-profile value (no rolling baseline or history lookup).
-  Same reading, same profile, same decision, always. The profile itself
-  is `main.py`'s problem (see "Grow profile editor" below) - the function
-  never reads `.env` or the database directly.
-- Temperature is a two-step ladder (fan alone, then AC) mirroring
-  humidity's high/low split; `TEMP_LOW_THRESHOLD_C` mirrors humidity's
-  low-branch reasoning (pull in warmer room air instead of cooling a tent
-  that's already too cold).
-- The pump is not decided here at all - soil moisture is reported only,
-  and the pump runs on its own manual/schedule control (see "Pump" below).
-- Manual mode bypasses this function entirely — `main.py` just reuses the
-  last dashboard-commanded state.
-- Exhaust is never set by this function directly. With its own schedule
-  off, auto mode makes it mirror the AC this function decides (after the
-  `ALERT_TEMP_C` override), so it ventilates exactly while the AC runs;
-  an enabled exhaust schedule always takes priority, and manual mode uses
-  the dashboard's exhaust switch (`exhaust_schedule.exhaust_follows_ac()`).
+- **The backend decides; the ESP32 only applies.** Rules are easier to
+  change, test and see from the dashboard. The only logic on the ESP32 is
+  safety that must work without a network.
+- **`decide_relay_state()` is pure.** Every threshold comes from its
+  `profile` argument, with no history or rolling baseline, so the same
+  reading always gives the same decision and it can be unit-tested
+  directly.
+- **Light, exhaust and pump sit outside the decision engine.** They are
+  timed jobs, not reactions to readings. The only crossover is the exhaust
+  following the AC in auto mode (`exhaust_follows_ac()`), so the tent
+  ventilates while the AC runs. Because it is set after the
+  `ALERT_TEMP_C` override, it also follows a forced-on AC.
+- **Soil moisture controls nothing.** Watering is deliberately manual or
+  on a fixed schedule; the probe reading is for information only.
 
-## Pump safety (firmware)
+## Schedules
 
-- `PUMP_COOLDOWN_SECONDS` only arms after a cap-triggered cutoff (30s
-  continuous run), not when a requested timed run ends normally — it's a
-  backstop against a run that somehow never ended, not part of normal
-  scheduling.
-- Any failed telemetry POST force-kills the pump immediately, not just a
-  detected WiFi-layer disconnect.
-- The offline emergency-temperature floor (`EMERGENCY_TEMP_C`) is one-way
-  — forces fan+exhaust on, never back off. A last-resort cutoff, not real
-  control.
-- `RELAY_ACTIVE_LOW` assumes active-low relay modules (the common case);
-  flip it for active-high hardware.
-- `SOIL_ADC_DRY`/`SOIL_ADC_WET` are placeholders — every capacitive soil
-  sensor needs per-unit calibration in air vs. water. `main.cpp` prints
-  the raw ADC value to Serial every cycle so that calibration doesn't
-  require guessing.
-- The firmware reports `pump_cooldown_remaining_s` in telemetry so the
-  dashboard's pump panel can show "cooldown ~Xs".
-
-## Backend
-
-- Runtime state (mode, commanded/reported relay state, `last_seen`) lives
-  in an in-process `AppState` guarded by a lock, not the database — a
-  restart safely defaults back to `auto` mode.
-- `ALERT_TEMP_C` (backend, default 32°C) forces fan+AC on directly as an
-  early-warning response, independent of and lower than the firmware's
-  offline-only `EMERGENCY_TEMP_C` (default 35°C).
-- Crossing `ALERT_TEMP_C` also fires a Telegram message (`telegram_client.py`),
-  separate from and rate-limited independently of the fan+AC override above
-  (which still re-applies every cycle regardless). `alerting.py`'s
-  `should_send_temp_alert()` is the pure decide-when logic, kept apart from
-  `telegram_client.py`'s actual HTTP call so it's unit-testable without
-  mocking the network or wall-clock time: fires once on first crossing, then
-  at most every `ALERT_NOTIFY_COOLDOWN_MINUTES` for as long as it stays
-  crossed — frequent enough that a sustained emergency isn't silent for
-  hours, rare enough that it isn't a message every ~20s telemetry cycle.
-  Sent via FastAPI `BackgroundTasks` so a slow/unreachable Telegram never
-  adds latency to the ESP32's telemetry POST; missing `TELEGRAM_BOT_TOKEN`/
-  `TELEGRAM_CHAT_ID` just skips the message (logged, not raised) — the
-  fan+AC response never depends on Telegram being configured.
-- `GrowProfile.telegram_alert_mode` ("main"/"all", editable from the
-  dashboard's Profile tab like every other profile field) is a second,
-  independent Telegram channel on top of the emergency alert above. "main"
-  (the default) is today's behavior, unchanged. "all" also fires a message
-  for every `ActivityLog` entry (relay transitions, mode/schedule changes,
-  profile saves, exports, auto-revert, ...) — uncapped, no cooldown, since
-  `RelayActivityTracker` already only logs actual on/off transitions, not
-  every ~20s telemetry cycle, so "all" doesn't spam on its own. Wired into
-  `ActivityLog.on_record` (`main.py`'s `_on_activity_recorded`, extending
-  the same hook that already persists every entry to the DB) rather than
-  `BackgroundTasks`, since `on_record` fires from contexts with no
-  `Request`/`BackgroundTasks` at all (e.g. `scheduler.py`'s
-  `_check_auto_revert` job) — a plain daemon `threading.Thread` sends
-  instead, working from any call site. Skips the one entry
-  (`"temperature alert sent: ..."`) the emergency path above already sends
-  its own, more detailed message for, so "all" mode never double-sends for
-  the same crossing. `alerting.py`'s `should_notify_all_alerts()` is the
-  pure decide-whether-to-notify logic (mode check + the dedup exclusion),
-  same unit-testable-without-mocking pattern as `should_send_temp_alert()`.
-  `telegram_alert_mode` lives on `GrowProfileIn`/`Out`/`Row` rather than a
-  new `AppState` field or endpoint — it's a grow-profile field like
-  `alert_temp_c`, so it reuses that entire existing
-  persistence/edit/save/migration machinery for free.
-- **AC moved from Home Assistant to a direct ESP32 IR transmitter**
-  (`firmware/src/ir_ac.*`), matching `decide_relay_state()`'s own binary
-  `ac` output exactly (on/off only) - there's no per-request temperature
-  control, every "on" targets one fixed temperature/mode/fan. This
-  deployment's AC turned out to use the COOLIX protocol, which
-  IRremoteESP8266 supports natively via a structured state class
-  (`IRCoolixAC` in `ir_Coolix.h`) rather than just raw timing replay -
-  `ir_ac.cpp` calls `setMode()`/`setFan()`/`setTemp()`/`setPower()` and
-  `send()` on every transition, so the target temperature
-  (`AC_TARGET_TEMP_C` in `config.h`) is a firmware constant, changeable
-  by reflashing alone, never requiring the physical remote again (unlike
-  an earlier version of this feature, which replayed two codes captured
-  verbatim from the remote - recapturing was the only way to change
-  anything about the ON state, including temperature). An AC whose
-  protocol the capture tool doesn't recognize has no structured class to
-  use and falls back to `sendRaw()` with the raw timing array the tool
-  still prints alongside the decoded form either way.
-  `commanded.ac` already traveled to the ESP32 inside the same
-  `relay_state` JSON fan/pump/light use (the field existed on `RelayState`
-  from the start; the firmware just ignored it) - no new wire format
-  needed, just a firmware that finally reads it. Home Assistant stays
-  wired in for its own reachability badge only
-  (`ha_client.check_connection()`), not removed outright, in case this
-  project uses HA for something else later - `ha_client.set_ac()` and the
-  `HA_AC_ENTITY`/`HA_AC_DOMAIN` env vars were removed as dead code once
-  nothing called them anymore.
-- IR is fire-and-forget, same limitation Home Assistant had: no
-  confirmation channel, so `reported_relay_state.ac` is "what we last
-  told it to do," not a verified real state. The firmware only
-  transmits on an actual on→off/off→on transition, never every
-  telemetry cycle - unlike a relay pin, re-sending the same IR code
-  isn't a harmless no-op (many AC remotes send a full state packet on
-  every press). The one exception is a single backup resend of the same
-  state `AC_IR_RESEND_DELAY_MS` (30s) later, since the AC occasionally
-  misses a signal and IR gives no way to detect that. It's non-blocking
-  (`IrAcController::tick()` in `loop()`), and re-armed on every new
-  command, so a quick on→off never gets a stale "on" resent after it.
-- **AC power check** (a "main" Telegram alert, so it fires in both alert
-  modes): `post_telemetry` queues a check whenever the `ac` value it
-  returns to the ESP32 changes - that response is when the IR signal is
-  actually fired - and `scheduler._check_ac_power` runs it after each HA
-  power poll once `AC_POWER_CHECK_DELAY_SECONDS` (60s, covering the
-  firmware's 30s backup resend) have passed: off but >= 200W, or on but
-  < 30W, sends "check AC". One check per transition, a newer change
-  replaces a pending one, skipped with no power reading, and not queued on
-  the first telemetry after a backend restart (no known previous value).
-  Its activity-log entry is excluded from "all alerts" mode like the
-  temperature alert's, so it's never sent twice.
-- **Optional live power/current/voltage row**, sourced from an
-  HA-monitored smart plug's three sensor entities
-  (`ha_client.fetch_power_reading()`). Same shape as
-  `check_connection()`: polled on its own background job
-  (`scheduler._check_ha_power`, default 10s - faster than the 30s
-  connectivity check, since this is meant to feel "live" next to the
-  dashboard's own 5s poll) and cached in `AppState`, never fetched inline
-  from `GET /api/status`. Each of the three entities
-  (`HA_CURRENT_ENTITY`/`HA_VOLTAGE_ENTITY`/`HA_POWER_ENTITY`) is fetched
-  independently, so one unconfigured (blank env var), renamed, or
-  temporarily-unavailable entity only blanks that one value, not all
-  three - no all-or-nothing reading. `models.HaPowerStatus` is the
-  pydantic response shape; `ha_client.PowerReading` is the plain internal
-  dataclass `AppState` actually holds, same split as `decision_engine.Reading`.
-- Every live readout card (temp/humidity/soil/current/voltage/power) shows
-  a small today's-min/max badge in its corner, tracked **entirely
-  client-side** (`localStorage`, keyed `grow-minmax-<metric>`) - the
-  backend has no concept of this and never computes or stores it.
-  Resets at the UTC day boundary (`todayUtcDateString()`, the same "today"
-  convention the day chart/grow-day counter already use), so a stored
-  value from a previous day is treated as absent rather than shown stale.
-  Survives a page reload (that's the point of `localStorage` over an
-  in-memory object) but is per-browser/per-device, not synced across
-  anyone else viewing the dashboard - two people watching the same tent
-  from two browsers see two independent histories.
-- `GET /api/history` takes `limit` (default 100, max 1000) plus optional
-  `since`/`until`, newest-first.
-
-## Grow profile editor
-
-- Every decision-engine threshold, plus `ALERT_TEMP_C` and the cosmetic
-  `GROW_PROFILE_NAME`/`TENT_SIZE_M2`/`GROW_START_DATE` fields, are one
-  editable "grow profile" (`GrowProfileIn`/`GrowProfileOut` in
-  `models.py`), live-editable from the dashboard's **profile** tab
-  (admin-only, like every other mutating route) - not a code or `.env`
-  change.
-- `start_date` derives a "day N" counter (day 1 = that date) shown in the
-  dashboard header - computed client-side from the already-returned
-  profile rather than as a field `GET /api/profile` serves pre-computed,
-  since it only changes once a day and the frontend already has
-  everything it needs. A future `start_date` (grow hasn't started yet)
-  shows no counter rather than a negative/zero one.
-- **Adding `start_date` to an already-shipped `grow_profile` table needed
-  a one-time `ALTER TABLE ... ADD COLUMN`** (`_ensure_grow_profile_
-  start_date_column()` in `main.py`, run on every startup before the
-  table is used) - `SQLModel.metadata.create_all()` only creates missing
-  *tables*, never adds a column to one that already exists, so a database
-  with a profile saved before this field existed would otherwise fail
-  every profile load/save with "no such column: start_date". Checked via
-  `PRAGMA table_info` so it's a no-op both for a brand-new database
-  (`create_all()` above already created the table with every current
-  column) and for a database that's already been migrated once.
-- Firmware-only safety settings (`EMERGENCY_TEMP_C`, `SOIL_ADC_DRY`/`WET`,
-  `MAX_PUMP_RUN_SECONDS`, `PUMP_COOLDOWN_SECONDS`) are deliberately **not**
-  part of this profile - there is no runtime channel for the backend to
-  push config to the ESP32 at all (telemetry responses only ever carry
-  relay commands), so editing them would silently do nothing. Light/
-  exhaust schedule values aren't part of it either - they're already
-  editable via their own dedicated panels, not a decision-engine threshold.
-- Persists to the database (`GrowProfileRow`, a singleton row fixed at
-  `id=1`) rather than living in-memory like every other runtime setting -
-  this one was deliberately asked to survive a restart, unlike mode or the
-  light/exhaust schedules, which reset to their `.env` default on purpose.
-  `.env` is read only as the very first boot's default, before any save
-  has ever happened; once `GrowProfileRow` exists, `.env` is never
-  consulted again for this value.
-- On startup, a missing `GrowProfileRow` leaves `AppState.grow_profile` at
-  its `.env`-derived default *without writing a row* - a DB row should
-  only ever be created by an explicit `POST /api/profile`, mirroring the
-  "no surprise actuation on a fresh deploy" rationale already used for the
-  light/exhaust schedules.
-- `GrowProfileIn`'s `@model_validator` enforces the same threshold
-  orderings the UI implies (humidity low < high, temp low < fan &le; ac,
-  alert &ge; temp-ac) so a nonsensical profile is rejected with `422`
-  rather than silently producing an always-on or always-off relay.
-- One consolidated `"grow profile updated: field old->new, ..."`
-  activity-log entry per save, not one per changed field like light/
-  exhaust schedule changes - up to 10 fields can change in a single save,
-  which would otherwise flood the 20-entry live feed. Listing every
-  changed field's old->new value in that one entry keeps it inspectable
-  without diffing two `GET /api/profile` responses by hand. Nothing is
-  logged for a save that doesn't actually change any value.
-
-## Schedule timezone
-
-- One IANA `schedule_timezone` on the grow profile, shared by light,
-  exhaust and pump, rather than one per schedule - they all describe the
-  same grower's day. Saved through the existing profile path and DB
-  migration; validated against `zoneinfo` (`422` on an unknown name), and
-  `GET /api/timezones` serves that same list to the dropdown so the UI
-  never offers a name the backend would reject. `tzdata` is pinned since
-  slim Docker images may not ship the OS zone database.
-- Only the schedules use it. Stored timestamps, charts, the grow-day
-  counter and the min/max reset stay UTC.
+- **No stored timers.** Every schedule is a pure function of the current
+  time (`is_light_on()`, `is_exhaust_on()`, `pump_schedule.slot_start()`),
+  so it is correct right after a restart.
+- **One `schedule_timezone` for all three schedules.** They describe the
+  same grower's day. It lives on the grow profile, so it reuses that
+  table's save, validation and migration code. `GET /api/timezones`
+  serves the list the validator accepts, so the dropdown can't offer an
+  invalid zone. `tzdata` is pinned because slim images may not ship zone
+  data.
+- **Only the schedules use local time.** Stored timestamps, charts, the
+  grow-day counter and the min/max reset stay UTC, so stored data never
+  depends on a setting.
+- **Light on/off times, not hours per day.** Growers think in "lights on at
+  18:00". Equal times are rejected because they could mean always on or
+  always off.
+- **Pump intervals all divide 24,** so slots line up with local midnight
+  every day. Turning the schedule on, or changing the interval or
+  timezone, counts the current slot as done, so a settings change never
+  waters immediately.
+- **Schedules start disabled and aren't persisted.** A fresh deploy or a
+  restart never actuates anything on an unreviewed default.
 
 ## Pump
 
-- Never part of `decide_relay_state()`; its own manual/schedule switch.
-- Runs are seconds long but the ESP32 polls every ~20s, so the firmware
-  times each run itself. The backend sends a one-time
-  `pump_run: {id, seconds}` request, re-sent until the firmware echoes the
-  id back as `pump_last_run_id` - acknowledgement makes repeated replies
-  harmless, and Unix-time-based ids mean a backend restart can't reuse an
-  id the firmware already ran.
-- Unacknowledged requests expire after `PUMP_RUN_REQUEST_TTL_SECONDS`
-  (300) so an ESP32 coming back online doesn't water at a random time.
-- Interval choices all divide 24 so slots line up with local midnight
-  every day. Enabling the schedule or changing the interval marks the
-  current slot done - turning it on never waters instantly.
+- **The firmware times each run.** Runs last seconds, but the ESP32 checks
+  in only every ~20s.
+- **Each run is a one-time request with an acknowledgement.** The
+  `pump_run` id repeats in each reply until the ESP32 echoes it back in
+  `pump_last_run_id`, so a lost reply can't drop a run and a repeated one
+  can't double it. Ids start from the Unix time, so a backend restart
+  can't reuse one.
+- **Requests expire after `PUMP_RUN_REQUEST_TTL_SECONDS`.** An ESP32 that
+  comes back after a long outage shouldn't water at a random time.
+- **The 30s cap and 60s cooldown stay as a backstop.** A normal run end
+  doesn't arm the cooldown; only a run that hit the cap does.
+- **Any failed telemetry POST stops the pump,** not just a detected WiFi
+  drop.
 
-## Light schedule
+## AC
 
-- Own ESP32 relay, own field on `RelayState` — never touched by
-  `decide_relay_state()` or auto/manual mode.
-- The schedule is a pure function of wall-clock time in the schedule
-  timezone: on at `on_time`, off at `off_time`, wrapping past midnight
-  when off is earlier than on. Equal times are rejected rather than
-  guessing always-on vs. always-off. No stored "next toggle" state, so
-  it's correct immediately after a restart.
-- The schedule toggle is the master switch: a manual command is rejected
-  with `409` while it's on. Starts disabled by default so a fresh deploy
-  never actuates on an unreviewed default photoperiod.
-- No auto-revert for manual light control — the schedule toggle itself is
-  the intended control, not a temporary override.
+- **IR from the ESP32, not Home Assistant.** It goes through the same
+  telemetry loop as the relays, with no second system that can be down.
+- **Structured COOLIX state (`IRCoolixAC`), not replayed raw codes.**
+  Temperature, mode and fan are firmware constants, so retargeting needs a
+  reflash, not the remote.
+- **Send only on a change, plus one backup resend 30s later.** Resending
+  an IR state isn't harmless the way a relay pin is, and IR can't confirm
+  receipt. The resend is non-blocking (`IrAcController::tick()`) and
+  cancelled by any newer command.
+- **The AC power check uses the smart plug as the missing feedback.** The
+  60s delay covers the 30s resend. Only one check is queued per change
+  (a newer change replaces it), and none on the first telemetry after a
+  restart, because there is no known previous state then.
+- **The offline emergency floor doesn't include the AC.** Fan and exhaust
+  are enough for a last-resort cutoff, and the floor only ever turns
+  things on.
 
-## Exhaust schedule
+## Alerts
 
-- Same "own relay, own schedule, master-switch" pattern as light, but a
-  repeating run/interval duty cycle instead of an on/off time window.
-  `run_minutes` can't exceed `interval_minutes` (`422`).
-- Never touched by `decide_relay_state()` or any sensor reading — its own
-  schedule or a manual command only.
+- **The `ALERT_TEMP_C` override is separate from its Telegram message.**
+  The override re-applies every cycle. The message is rate-limited by
+  `should_send_temp_alert()`: once on crossing, then at most every
+  `ALERT_NOTIFY_COOLDOWN_MINUTES`. `ALERT_TEMP_C` (32°C) sits below the
+  firmware's offline-only `EMERGENCY_TEMP_C` (35°C).
+- **The decision logic is pure functions in `alerting.py`.** The HTTP
+  sending is in `telegram_client.py`, so the timing rules are testable
+  without mocks.
+- **"All alerts" hooks into `ActivityLog.on_record`.** It works from
+  scheduler jobs that have no request context, and sends on a daemon
+  thread so Telegram never delays a request.
+- **"All" mode needs no cooldown.** Relay entries are only logged on real
+  transitions. Entries that already have their own main alert (in
+  `MAIN_ALERT_ACTIVITY_PREFIXES`) are skipped, so nothing is sent twice.
+- **Missing Telegram config logs a warning and skips the message.** The
+  cooling response never depends on Telegram.
 
-## Activity log
+## Grow profile
 
-- Two tiers: a 20-entry in-memory ring buffer for the live dashboard feed
-  (resets on restart, like the rest of `AppState`), and an unbounded
-  `activity_log` DB table for the complete history, written via a hook so
-  `activity_log.py` itself stays free of any DB dependency.
-- Only actual on/off transitions are logged, never every telemetry cycle
-  regardless of whether anything changed.
-- Every entry carries an actor: the dashboard username for a manual
-  action, or `"auto"` for anything the decision engine or a schedule did
-  on its own.
-- The export button mirrors the existing readings export exactly (own
-  endpoint, same admin-only enforcement) — no scheduled background export,
-  since the log is reviewed occasionally rather than needing an hourly
-  fresh copy on disk.
+- **The profile is persisted, unlike other runtime state.** It is a
+  singleton `GrowProfileRow` (id=1). `.env` is only the default before the
+  first save, and no row is written until someone saves.
+- **New columns are added at startup with `_ensure_grow_profile_column()`.**
+  `create_all()` never alters existing tables, and `PRAGMA table_info`
+  makes the step a no-op once done. Dropped fields (the soil thresholds)
+  keep their columns with defaults, so old databases still accept
+  inserts.
+- **Validation rejects nonsensical orderings with `422`**: humidity low <
+  high, temp low < fan ≤ AC, and alert ≥ AC.
+- **One activity entry per save** lists every changed field as old → new,
+  so a save can't flood the 20-entry feed.
+- **Firmware-only settings stay out of the profile.**
+  `EMERGENCY_TEMP_C`, the soil calibration and the pump cap can't be
+  pushed to the ESP32, so editing them in the dashboard would silently do
+  nothing.
 
-## History charts
+## Backend
 
-- Aggregation happens server-side in Python (`chart_data.bucket_by_step()`),
-  not SQL or client-side — a day is ~4,300 rows, a week ~30,000, too much
-  to ship raw and average in JS.
-- A bucket with no readings renders as a genuine gap, never `0` or
-  interpolated.
-- The week view uses 6-hour buckets (4 points/day), not one average per
-  day, so the intraday pattern stays visible.
-- Dual y-axis: temperature (°C) on the left, humidity + soil moisture
-  (both already %) sharing the right.
-- Rendered with Chart.js (see "Frontend" below for why) rather than
-  hand-rolled SVG. Date/week pickers are native `<input>` types. All chart
-  windows are UTC, matching the rest of the backend.
+- **Runtime state lives in an in-process `AppState` behind a lock.** A
+  restart safely returns to auto mode with schedules off.
+- **Home Assistant is polled in the background and cached.** A slow HA
+  never delays `/api/status`. Each power entity is fetched separately, so
+  one bad entity blanks only its own value.
+- **The activity log has two tiers:** a 20-entry in-memory feed and an
+  unbounded `activity_log` table, written through a hook so
+  `activity_log.py` has no DB dependency. Every entry records an actor:
+  the username, or `auto`.
+- **Charts are aggregated server-side** (`chart_data.bucket_by_step()`).
+  A day is ~4,300 rows. Empty buckets render as gaps, never zero.
 
-## Dashboard authentication / roles
+## Auth
 
-- HTTP Basic Auth via a custom `@app.middleware("http")` function, not
-  FastAPI's `HTTPBasic` dependency — covers every route, including the
-  static file mount, in one place instead of per-route wiring.
-- No new dependency — `base64`/`secrets` (standard library) are enough.
-- Users live in `.env` as a JSON array (`DASHBOARD_USERS`), not a DB
-  table, same as every other credential (`HA_TOKEN`) already there.
-  Plaintext passwords, same trust model.
-- Fails closed: a missing/malformed `DASHBOARD_USERS` rejects every
-  request rather than falling back to a default login.
-- `POST /api/telemetry` is the only unauthenticated route, since the
-  firmware sends no `Authorization` header. Everything else, including
-  static assets, requires valid credentials.
-- The role check is GET/HEAD/OPTIONS vs. everything else, enforced once
-  in the middleware — a viewer gets `403` on any mutating call before it
-  reaches the route handler.
-- The dashboard's viewer-lockdown UI (disabled buttons, `pointer-events:
-  none`) is a courtesy, not the boundary — the `403` above is enforced
-  server-side regardless of what the browser shows.
-- No session/expiry: Basic Auth is stateless, so "staying logged in" is
-  purely the browser's own credential cache for the origin.
+- **HTTP Basic Auth in one middleware** covers every route, including the
+  static files, using only the standard library.
+- **Users are listed in `DASHBOARD_USERS` in `.env`,** the same trust
+  model as the other secrets. A missing or invalid value rejects every
+  request; there is no default login.
+- **Viewers get `403` on any method other than GET, HEAD or OPTIONS,**
+  enforced server-side. The disabled controls in the UI are only a
+  courtesy.
+- **`/api/telemetry` is unauthenticated,** because the firmware sends no
+  credentials.
 
 ## Frontend
 
-- **CDN libraries (Chart.js, Lucide, Motion, Google Fonts), reversing the
-  earlier "zero CDN, works with no internet access" stance.** Chosen
-  deliberately over hand-rolled equivalents for real charts/icons/
-  animation/type, accepting that those four things now need internet
-  access to look right on first load. The rest of the dashboard doesn't
-  pay that cost: every CDN script is loaded defensively (`CHARTS_AVAILABLE
-  = !!window.Chart` before any `Chart.*` call, `if (window.lucide)` before
-  `createIcons()`, a `runMotion()` wrapper that jumps straight to the end
-  state if `window.__animate` never showed up) so a blocked/offline CDN
-  degrades each feature independently - icons render blank, charts show a
-  "charts unavailable" message, Motion-driven transitions snap instantly,
-  fonts fall back to the OS default - rather than a thrown error from one
-  missing script stopping every other `<script>` below it in the same
-  file, which would otherwise take out live polling and every control
-  along with it.
-- **Chart.js replaces the hand-rolled inline-SVG line/pie charts.** Real
-  interactive tooltips that fire on tap as well as hover
-  (`interaction: {mode: "nearest", intersect: false}`) replace the custom
-  invisible-hit-circle-per-point mechanism the SVG version needed to get
-  the same result on a touchscreen. The average reference lines move to
-  `chartjs-plugin-annotation` instead of hand-drawn dashed `<line>`
-  elements, and the per-series average now lives in Chart.js's own legend
-  (`plugins.legend.labels` text) instead of a separately hand-built one.
-  The light-schedule pie's edge cases (`on_hours` at 0 or 24) no longer
-  need manual branching - a zero-length doughnut slice just renders
-  invisibly, leaving a full circle of the other color.
-- **Lucide replaces every hand-pasted inline `<path>` icon.** Each icon is
-  now a single `<i data-lucide="name">` element, replacing several lines
-  of hand-copied SVG path data; `lucide.createIcons()` swaps every one for
-  a real `<svg>` in place, carrying over whatever `width`/`height`/
-  `stroke-width` attributes were set on the `<i>` - existing CSS that
-  targeted `svg` as a child (`.section-title svg`'s icon-chip background,
-  `.readout .icon`'s color) keeps working unmodified, since the generated
-  element is still literally an `<svg>` in the same spot in the DOM.
-- **Motion animates a handful of specific transitions, not everything.**
-  The offline/stale banners now animate height to/from a measured `"auto"`
-  (something plain CSS can't do without a fixed max-height guess) via
-  `animate(el, {height: "auto", ...})`, replacing the `grid-template-rows:
-  0fr/1fr` trick that worked around that limitation. Tab switching gets a
-  short fade+slide. The export/activity-export/profile-save pending
-  indicators fade in/out instead of snapping. Continuous looping
-  animations (the status-dot pulses, the manual-mode banner's gradient
-  shift) deliberately stay plain CSS `@keyframes` - Motion's `animate()`
-  is suited to one-off triggered transitions, not infinite loops, so there
-  was no reason to move those.
-- "Backend unreachable" (a failed fetch) and "sensor offline" (`offline:
-  true` from a reachable backend) are two visually distinct banners —
-  different problems, different signals.
-- Manual mode gets a persistent top banner plus a background wash across
-  every panel, not just a toggle change, so it's visually unmistakable.
-- AC keeps its own panel (not a relay tile, even though it's ESP32-driven
-  like one now) since it's IR, not a GPIO pin - its "on" accent stays teal
-  to flag that distinction, visually separate from every other relay's
-  green/amber. The Home Assistant reachability badge moved to its own
-  small panel once it stopped sharing a panel with AC control.
-- **Sticky header, not a fixed one.** `position: sticky` keeps mode/
-  connection status visible while scrolling a long panel list on a phone,
-  without the extra complexity a `fixed` header brings (content needing a
-  matching top-padding offset, z-index fights). The one wrinkle: the
-  manual-mode strip is a separate `position: fixed` full-width banner
-  above everything, so the sticky header's `top` offset has to shift to
-  `50px` under `body.manual` or the two would overlap - handled with the
-  same class the rest of manual mode's visual treatment already toggles.
-- **A `--tap: 44px` token, applied as `min-height` across every button,
-  select, and toggle** - the standard minimum comfortable touch target
-  (Apple/Google guidance), rather than sizing controls for a mouse cursor
-  and hoping they're still tappable on a phone.
-- **`prefers-reduced-motion` is respected globally** - none of the
-  pulse/slide/fade animations carry information, so anyone with that OS
-  setting gets them collapsed to instant, no separate opt-out needed per
-  component.
+- **One HTML file, no build step.** It is edited and reloaded directly.
+- **CDN libraries (Chart.js, Lucide, Motion, Google Fonts)** are loaded
+  defensively, so a blocked CDN degrades only its own feature, never
+  polling or controls.
+- **Min/max badges live only in the browser** (`localStorage`), reset at
+  UTC midnight, and are per device by design.
+- **Two banners:** "backend unreachable" and "sensor offline" are
+  different problems with different fixes.
+- **The UI is sized for phones:** a sticky header, 44px touch targets, and
+  `prefers-reduced-motion` respected.
 
-## Docker / infra
+## Infra
 
-- Home Assistant runs via the official image with `network_mode: host`
-  (for local device discovery), config persisted to a gitignored volume.
+- **Home Assistant runs from the official image with host networking,**
+  for device discovery. Its config is a gitignored volume.
