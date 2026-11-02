@@ -128,6 +128,9 @@ only; the behaviour itself is in [automation-logic.md](automation-logic.md).
   unbounded `activity_log` table, written through a hook so
   `activity_log.py` has no DB dependency. Every entry records an actor:
   the username, or `auto`.
+- **Relay changes from the same telemetry cycle are one entry**
+  (`"ac on, exhaust on"`), so the feed and "all alerts" Telegram mode
+  don't show near-duplicate rows.
 - **Charts are aggregated server-side** (`chart_data.bucket_by_step()`).
   A day is ~4,300 rows. Empty buckets render as gaps, never zero.
 
