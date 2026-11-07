@@ -98,6 +98,20 @@ def test_update_only_logs_relays_that_changed():
     assert entries == [("ac on", "auto"), ("fan on", "admin")]
 
 
+def test_update_combines_relays_that_changed_together():
+    log = ActivityLog()
+    tracker = RelayActivityTracker(log)
+
+    tracker.update(SimpleNamespace(fan=False, ac=True, pump=False, light=False, exhaust=True), "auto")
+    assert [(e.message, e.actor) for e in log.recent()] == [("ac on, exhaust on", "auto")]
+
+    tracker.update(SimpleNamespace(fan=False, ac=True, pump=False, light=False, exhaust=True), "auto")
+    assert len(log.recent()) == 1
+
+    tracker.update(SimpleNamespace(fan=False, ac=False, pump=False, light=False, exhaust=False), "auto")
+    assert log.recent()[0].message == "ac off, exhaust off"
+
+
 def test_survives_in_place_mutation_of_the_object_passed_to_update():
     """Regression test: main.py's /api/relay handler does
     setattr(app_state.commanded_relay_state, ...) on the very same

@@ -73,6 +73,14 @@ class RelayActivityTracker:
     def update(self, new_state, actor: str) -> None:
         """Checks all relays at once against anything with fan/ac/pump/
         light/exhaust boolean attributes (e.g. models.RelayState) - duck
-        typed so this module doesn't need to depend on models.py."""
+        typed so this module doesn't need to depend on models.py. Relays
+        that changed together are logged as one entry, e.g.
+        "ac on, exhaust on"."""
+        changes = []
         for relay in self.RELAYS:
-            self.note(relay, getattr(new_state, relay), actor)
+            value = getattr(new_state, relay)
+            if self._last[relay] != value:
+                changes.append(f"{relay} {'on' if value else 'off'}")
+            self._last[relay] = value
+        if changes:
+            self._log.record(", ".join(changes), actor)
