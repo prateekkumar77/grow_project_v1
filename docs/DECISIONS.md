@@ -150,6 +150,13 @@ only; the behaviour itself is in [automation-logic.md](automation-logic.md).
 ## Frontend
 
 - **One HTML file, no build step.** It is edited and reloaded directly.
+- **Design tokens on `:root`, light and dark from the OS.** Colors,
+  spacing (4px grid), radii and shadows are CSS variables; a
+  `prefers-color-scheme: light` block swaps the palette. Charts read the
+  same tokens (`readChartColors()`) and redraw when the theme changes.
+- **One accent (emerald) for "on", active and primary actions;** amber only
+  for cautionary states (manual mode, "all alerts", pending), red only for
+  errors. Per-metric hues are limited to icons and chart series.
 - **CDN libraries (Chart.js, Lucide, Motion, Google Fonts)** are loaded
   defensively, so a blocked CDN degrades only its own feature, never
   polling or controls.
